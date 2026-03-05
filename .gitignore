@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Compiled TypeScript
+dist/
+
+# Compiled Go binaries (run npm run build:clients to generate; required for npm publish)
+bin/
+
+# Go
+client/version.go
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Debug / logs
+*.log
+npm-debug.log*
+
+# Env
+.env
+.env.local

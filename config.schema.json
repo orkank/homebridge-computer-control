@@ -1,0 +1,95 @@
+{
+  "pluginAlias": "ComputerControl",
+  "pluginType": "platform",
+  "singular": true,
+  "customUi": true,
+  "headerDisplay": "🖥️ **Computer Control** — Wake and sleep your computers from HomeKit.",
+  "footerDisplay": "Computers running the Go client will auto-register. You can also manage them below.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Platform Name",
+        "type": "string",
+        "default": "Computer Control",
+        "required": true
+      },
+      "registrationPort": {
+        "title": "Registration Server Port",
+        "type": "integer",
+        "default": 9090,
+        "minimum": 1024,
+        "maximum": 65535,
+        "description": "The port on which the plugin listens for client registrations."
+      },
+      "groupAccessoryName": {
+        "title": "Group Accessory Name",
+        "type": "string",
+        "default": "Computers",
+        "description": "Name of the virtual accessory that controls all computers at once (Wake All / Sleep All)."
+      },
+      "antiSleepDeviceName": {
+        "title": "Anti-Sleep Device Name",
+        "type": "string",
+        "default": "Computer Sleep Prevention",
+        "description": "Name of the virtual switch that prevents all computers from sleeping. Siri will use this name — e.g. \"Hey Siri, turn on Computer Sleep Prevention\". Leave empty to disable."
+      },
+      "antiSleepTimer": {
+        "title": "Anti-Sleep Timer (minutes)",
+        "type": "integer",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 1440,
+        "description": "Auto-turn-off delay in minutes. 0 = unlimited (stays on until manually turned off)."
+      },
+      "clients": {
+        "title": "Manual Clients",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "displayName": {
+              "title": "Display Name",
+              "type": "string",
+              "required": true,
+              "description": "The name shown in HomeKit."
+            },
+            "mac": {
+              "title": "MAC Address",
+              "type": "string",
+              "required": true,
+              "pattern": "^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$",
+              "description": "MAC address for Wake-on-LAN (e.g., AA:BB:CC:DD:EE:FF)."
+            },
+            "ip": {
+              "title": "IP Address",
+              "type": "string",
+              "required": true,
+              "format": "ipv4",
+              "description": "The local IP address of the computer."
+            },
+            "port": {
+              "title": "Client Port",
+              "type": "integer",
+              "default": 45991,
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port the Go client is listening on."
+            },
+            "os": {
+              "title": "Operating System",
+              "type": "string",
+              "default": "unknown",
+              "oneOf": [
+                { "title": "macOS", "enum": ["darwin"] },
+                { "title": "Windows", "enum": ["windows"] },
+                { "title": "Linux", "enum": ["linux"] },
+                { "title": "Unknown", "enum": ["unknown"] }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

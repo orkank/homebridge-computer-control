@@ -1,0 +1,199 @@
+<div id="client-result-modal" class="modal" tabindex="-1" role="dialog" style="display:none;">
+  <div class="modal-backdrop" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1040;" id="client-result-backdrop"></div>
+  <div class="modal-dialog modal-lg" role="document" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1050;max-width:90%;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="client-result-title">Client Response</h5>
+        <button type="button" class="close" aria-label="Close" id="client-result-close"><span aria-hidden="true">&times;</span></button>
+      </div>
+      <div class="modal-body">
+        <pre id="client-result-body" class="bg-light p-3 rounded" style="max-height:400px;overflow:auto;font-size:0.85em;"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header border-0 bg-primary text-white">
+    <h5 class="mb-0">Auto-Registered Computers (Dynamic)</h5>
+  </div>
+  <div class="card-body">
+    <p>Below is the list of computers that are actively communicating with this Homebridge plugin. They are automatically added to HomeKit as Switches. Use <strong>Health</strong> and <strong>Status</strong> to fetch live data from each client (requires token; only the plugin can perform these requests).</p>
+    <div id="dynamic-clients-list" class="list-group">
+      <div class="text-center py-3"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+    </div>
+  </div>
+</div>
+
+<div class="mb-3">
+  <h5>Manual Configuration</h5>
+  <p>To explicitly configure the plugin port or add manual devices (e.g. static Wake-on-LAN bindings), use the settings below:</p>
+</div>
+<!-- Schema form (name, registrationPort, manual clients) is shown below via showSchemaForm() -->
+
+<script>
+  (async () => {
+    const container = document.getElementById('dynamic-clients-list');
+
+    async function loadClients() {
+      try {
+        homebridge.showSpinner();
+        const clients = await homebridge.request('/get-clients');
+
+        if (!clients || clients.length === 0) {
+          container.innerHTML = '<div class="alert alert-info border-0 mb-0">No auto-registered computers found yet. Make sure the client app is running.</div>';
+        } else {
+          const config = await homebridge.getPluginConfig();
+          const ourPlatform = (config || []).find(p => p.platform === 'ComputerControl');
+          const registrationPort = ourPlatform?.registrationPort || 9090;
+
+          container.innerHTML = '';
+          clients.forEach(c => {
+            const date = new Date(c.lastSeen || Date.now());
+            const isOnline = date.getTime() > Date.now() - 60000;
+
+            const html = `
+              <div class="list-group-item d-flex justify-content-between align-items-center" data-mac="${c.mac}">
+                <div>
+                  <h6 class="mb-0"><strong>${(c.displayName || c.hostname || 'Computer').replace(/</g, '&lt;')}</strong></h6>
+                  <small class="text-muted d-block mt-1">
+                    <i class="fas fa-desktop"></i> OS: ${(c.os || 'unknown').replace(/</g, '&lt;')} &nbsp; | &nbsp;
+                    <i class="fas fa-network-wired"></i> IP: ${(c.ip || '').replace(/</g, '&lt;')}:${c.port || 45991} &nbsp; | &nbsp;
+                    <i class="fas fa-barcode"></i> MAC: ${(c.mac || '').replace(/</g, '&lt;')}
+                  </small>
+                </div>
+                <div class="d-flex align-items-center">
+                  <span class="badge badge-pill mr-2 ${isOnline ? 'badge-success' : 'badge-danger'}" style="color:#fff!important;min-width:4.5em;">
+                    ${isOnline ? 'Online' : 'Offline'}
+                  </span>
+                  <button type="button" class="btn btn-sm btn-outline-primary mr-1 btn-fetch-health" title="Fetch health from client">
+                    <i class="fas fa-heartbeat"></i> Health
+                  </button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary mr-1 btn-fetch-status" title="Fetch status from client">
+                    <i class="fas fa-info-circle"></i> Status
+                  </button>
+                  <button type="button" class="btn btn-sm btn-outline-danger" title="Remove from list">
+                    <i class="fas fa-trash-alt"></i>
+                  </button>
+                </div>
+              </div>
+            `;
+            container.insertAdjacentHTML('beforeend', html);
+          });
+
+          function showResult(title, data) {
+            const modal = document.getElementById('client-result-modal');
+            const backdrop = document.getElementById('client-result-backdrop');
+            const titleEl = document.getElementById('client-result-title');
+            const bodyEl = document.getElementById('client-result-body');
+            titleEl.textContent = title;
+            bodyEl.textContent = typeof data === 'object'
+              ? JSON.stringify(data, null, 2) : String(data);
+            modal.style.display = 'block';
+            function closeModal() {
+              modal.style.display = 'none';
+              backdrop.onclick = null;
+              document.getElementById('client-result-close').onclick = null;
+            }
+            backdrop.onclick = closeModal;
+            document.getElementById('client-result-close').onclick = closeModal;
+          }
+
+          function bindFetchHandlers() {
+            container.querySelectorAll('.btn-fetch-health').forEach(btn => {
+              btn.onclick = async () => {
+                const row = btn.closest('.list-group-item');
+                const mac = row?.dataset?.mac;
+                if (!mac) return;
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                try {
+                  const result = await homebridge.request('/fetch-client-health', { mac, port: registrationPort });
+                  if (result?.success) {
+                    showResult('Health — ' + (row.querySelector('h6')?.textContent || mac), result.data);
+                  } else {
+                    homebridge.toast.error(result?.error || 'Failed', 'Computer Control');
+                  }
+                } finally {
+                  btn.disabled = false;
+                  btn.innerHTML = '<i class="fas fa-heartbeat"></i> Health';
+                }
+              };
+            });
+            container.querySelectorAll('.btn-fetch-status').forEach(btn => {
+              btn.onclick = async () => {
+                const row = btn.closest('.list-group-item');
+                const mac = row?.dataset?.mac;
+                if (!mac) return;
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                try {
+                  const result = await homebridge.request('/fetch-client-status', { mac, port: registrationPort });
+                  if (result?.success) {
+                    showResult('Status — ' + (row.querySelector('h6')?.textContent || mac), result.data);
+                  } else {
+                    homebridge.toast.error(result?.error || 'Failed', 'Computer Control');
+                  }
+                } finally {
+                  btn.disabled = false;
+                  btn.innerHTML = '<i class="fas fa-info-circle"></i> Status';
+                }
+              };
+            });
+          }
+
+          function bindDeleteHandlers() {
+            container.querySelectorAll('button.btn-outline-danger').forEach(btn => {
+              btn.onclick = async (e) => {
+                const row = (e.currentTarget || e.target).closest('.list-group-item');
+                const mac = row?.dataset?.mac;
+                if (!mac) return;
+
+                const actionsDiv = row.querySelector('.d-flex.align-items-center');
+                const originalHtml = actionsDiv.innerHTML;
+                actionsDiv.innerHTML = `
+                  <span class="text-muted small mr-2">Remove?</span>
+                  <button type="button" class="btn btn-sm btn-danger mr-1 confirm-yes">Yes</button>
+                  <button type="button" class="btn btn-sm btn-secondary confirm-no">No</button>
+                `;
+
+                row.querySelector('.confirm-yes').onclick = async () => {
+                  actionsDiv.innerHTML = '<span class="text-muted small"><i class="fas fa-spinner fa-spin"></i> Removing...</span>';
+                  const result = await homebridge.request('/delete-client', { mac, port: registrationPort });
+                  if (result?.success) {
+                    homebridge.toast.success('Computer removed', 'Computer Control');
+                    row.remove();
+                  } else {
+                    homebridge.toast.error(result?.error || 'Failed to remove', 'Computer Control');
+                    actionsDiv.innerHTML = originalHtml;
+                    bindDeleteHandlers();
+                  }
+                };
+
+                row.querySelector('.confirm-no').onclick = () => {
+                  actionsDiv.innerHTML = originalHtml;
+                  bindDeleteHandlers();
+                };
+              };
+            });
+          }
+          bindFetchHandlers();
+          bindDeleteHandlers();
+        }
+      } catch (e) {
+        container.innerHTML = `<div class="alert alert-danger mb-0">Error loading dynamic clients: ${e.message}</div>`;
+      } finally {
+        homebridge.hideSpinner();
+      }
+    }
+
+    try {
+      await loadClients();
+    } catch (e) {
+      container.innerHTML = `<div class="alert alert-danger mb-0">Error: ${e.message}</div>`;
+    } finally {
+      homebridge.hideSpinner();
+      homebridge.showSchemaForm();
+    }
+  })();
+</script>
