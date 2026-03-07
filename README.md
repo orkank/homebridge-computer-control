@@ -180,13 +180,13 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ### 1.1.1 (Current)
 
+- **macOS Dark Mode**: Hide/Quit buttons use light text on dark window frame; sidebar, separators, and sidebar items follow system light/dark theme
 - **Temperature Sensor**: Optional CPU temperature in HomeKit
   - Client checkbox "Send Temperature Data"; persisted in `client_config.json`
   - macOS: gopsutil sensors (SMC/HID), ioreg, system_profiler, powermetrics
   - Windows: WMI (MSAcpi_ThermalZoneTemperature, ThermalZoneInformation, Win32_TemperatureProbe)
   - Linux: sysfs thermal zones, `sensors` fallback
   - Dynamic add/remove of TemperatureSensor service based on client data
-- **Client**: Console theme (dark gray bg, green text)
 - **Windows**: HideWindow for exec (no console pop-ups); multi-WMI temperature fallbacks
 
 ### 1.1.0
