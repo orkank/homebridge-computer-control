@@ -122,18 +122,27 @@ sudo npm install -g ./
 ```
 
 ### 4. Homebridge Config
-Add to your `config.json` (or use Config UI X):
+
+> ⚠️ **Required** — The plugin will **not work** until the platform is added to your config. After installing, open the plugin settings in Homebridge Config UI X and **Save** the configuration. Or add the platform manually to `config.json`.
+
+Add to your `config.json` (or use Config UI X → Plugins → Computer Control → Save):
 ```json
 {
   "platforms": [
     {
       "platform": "ComputerControl",
       "name": "Computer Control",
-      "registrationPort": 9090
+      "registrationPort": 9090,
+      "groupAccessoryName": "Computers",
+      "antiSleepDeviceName": "Computer Sleep Prevention",
+      "antiSleepTimer": 0,
+      "clients": []
     }
   ]
 }
 ```
+
+**Docker:** If Homebridge runs in Docker, ensure port **9090** is exposed (registration + download server). Example: `-p 9090:9090`
 
 ### 5. Download & Run Client on Target Computers
 

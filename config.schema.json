@@ -7,6 +7,14 @@
   "footerDisplay": "Computers running the Go client will auto-register. You can also manage them below.",
   "schema": {
     "type": "object",
+    "default": {
+      "name": "Computer Control",
+      "registrationPort": 9090,
+      "groupAccessoryName": "Computers",
+      "antiSleepDeviceName": "Computer Sleep Prevention",
+      "antiSleepTimer": 0,
+      "clients": []
+    },
     "properties": {
       "name": {
         "title": "Platform Name",
