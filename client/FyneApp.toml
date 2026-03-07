@@ -3,4 +3,4 @@ Icon = "icon.png"
 Name = "Computer Control"
 ID = "com.homebridge.computer-control"
 Version = "1.0.0"
-Build = 108
+Build = 132

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/exec"
@@ -24,14 +25,15 @@ var (
 
 // RegistrationPayload is the JSON body sent to the Homebridge plugin.
 type RegistrationPayload struct {
-	Hostname   string `json:"hostname"`
-	IP         string `json:"ip"`
-	MAC        string `json:"mac"`
-	Port       int    `json:"port"`
-	OS         string `json:"os"`
-	Arch       string `json:"arch,omitempty"`       // runtime.GOARCH for update platform selection
-	Version   string `json:"version,omitempty"`    // client version for auto-update check
-	IsDarkWake bool   `json:"isDarkWake,omitempty"` // macOS: true = Power Nap, plugin keeps device OFF
+	Hostname    string `json:"hostname"`
+	IP          string `json:"ip"`
+	MAC         string `json:"mac"`
+	Port        int    `json:"port"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch,omitempty"`        // runtime.GOARCH for update platform selection
+	Version     string `json:"version,omitempty"`       // client version for auto-update check
+	IsDarkWake  bool   `json:"isDarkWake,omitempty"`   // macOS: true = Power Nap, plugin keeps device OFF
+	Temperature *int   `json:"temperature,omitempty"` // CPU temp in millidegree Celsius; only when Send Temperature enabled
 }
 
 // SleepResponse is the JSON returned by the /sleep endpoint.
@@ -128,6 +130,7 @@ func handleSleep(w http.ResponseWriter, r *http.Request) {
 		cmd = exec.Command("osascript", "-e", `tell application "System Events" to sleep`)
 	case "windows":
 		cmd = exec.Command("rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0")
+		prepareCmd(cmd)
 	case "linux":
 		cmd = exec.Command("systemctl", "suspend")
 	default:
@@ -373,11 +376,29 @@ func sendHeartbeat(hostname, ip, mac string) bool {
 		Version:    clientVersion,
 		IsDarkWake: isDisplayInDarkWake(),
 	}
+	// Only read and send temperature when user enabled "Send Temperature Data" (minimizes CPU load)
+	// On failure: send null silently, no log spam
+	if getSendTemperature() {
+		if t := getCPUTemperatureMillidegree(); t > 0 {
+			payload.Temperature = &t
+		}
+	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("⚠️  Marshal error: %v", err)
 		return false
+	}
+
+	log.Printf("💓 Heartbeat request: %s", string(body))
+
+	if onHeartbeatSending != nil {
+		onHeartbeatSending(true)
+		defer func() {
+			if onHeartbeatSending != nil {
+				onHeartbeatSending(false)
+			}
+		}()
 	}
 
 	url := strings.TrimRight(flagPluginURL, "/") + "/register"
@@ -392,13 +413,16 @@ func sendHeartbeat(hostname, ip, mac string) bool {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("💓 Heartbeat response: %s", string(respBody))
+
 		var result struct {
 			Token           string `json:"token"`
 			UpdateAvailable bool   `json:"updateAvailable"`
 			UpdateURL       string `json:"updateUrl"`
 			UpdateSha256    string `json:"updateSha256"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
+		if err := json.NewDecoder(bytes.NewReader(respBody)).Decode(&result); err == nil {
 			if result.Token != "" {
 				authTokenMu.Lock()
 				if setAuthToken != nil {

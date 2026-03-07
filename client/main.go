@@ -10,12 +10,9 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -34,13 +31,15 @@ var (
 	startTime     time.Time
 
 	// Mutable labels updated from background goroutines
-	statusLabel    *widget.RichText
+	statusDot     *statusDotWidget
 	ipLabel       *widget.Label
 	stayAwakeLabel *widget.Label
 	// onStayAwakeStateChanged is set by buildMainUI; stayawake_*.go calls it when state changes
 	onStayAwakeStateChanged func(bool)
 	// refreshLogView is set by buildMainUI; logbuf.go calls it when new log entries arrive
 	refreshLogView func()
+	// onHeartbeatSending is called when heartbeat starts/stops; used for status dot (orange)
+	onHeartbeatSending func(bool)
 
 	// The main Fyne app & window
 	fyneApp    fyne.App
@@ -69,7 +68,11 @@ func main() {
 	// ── Create Fyne App ──
 	fyneApp = app.NewWithID("com.homebridge.computer-control")
 	fyneApp.SetIcon(getAppIcon())
-	hideDockIconMacOS() // no-op on non-darwin; hides dock icon on macOS
+	fyneApp.Settings().SetTheme(newMacTheme()) // macOS-style light/dark, accent
+	hideDockIconMacOS()                             // no-op on non-darwin; hides dock icon on macOS
+
+	// ── Load client config (client_config.json) ──
+	initClientConfig()
 
 	// ── Load saved preferences ──
 	if flagPluginURL == "" {
@@ -116,12 +119,22 @@ func main() {
 
 	// ── Build GUI ──
 	mainWindow = fyneApp.NewWindow("Computer Control")
-	mainWindow.Resize(fyne.NewSize(420, 480))
-	mainWindow.SetFixedSize(true)
+	mainWindow.Resize(fyne.NewSize(520, 560))
 	mainWindow.CenterOnScreen()
 
 	content := buildMainUI()
 	mainWindow.SetContent(content)
+
+	// ── Theme change listener (light/dark) — refresh theme-dependent widgets ──
+	fyneApp.Settings().AddListener(func(_ fyne.Settings) {
+		fyne.Do(func() {
+			for _, w := range themeDependentWidgets {
+				if w != nil {
+					w.Refresh()
+				}
+			}
+		})
+	})
 
 	// ── Window close → hide to tray ──
 	mainWindow.SetCloseIntercept(func() {
@@ -158,174 +171,7 @@ func main() {
 	mainWindow.ShowAndRun()
 }
 
-// ──────────────────────────────────────────────
-// GUI Construction
-// ──────────────────────────────────────────────
-
-func buildMainUI() fyne.CanvasObject {
-	// ── Header with icon ──
-	headerIcon := canvas.NewImageFromResource(getAppIcon())
-	headerIcon.SetMinSize(fyne.NewSize(48, 48))
-	headerIcon.FillMode = canvas.ImageFillContain
-
-	headerTitle := widget.NewRichTextFromMarkdown("## 🖥 Computer Control v" + clientVersion)
-
-	header := container.NewHBox(
-		headerIcon,
-		layout.NewSpacer(),
-		headerTitle,
-		layout.NewSpacer(),
-	)
-
-	// ── Info card ──
-	hostEntry := widget.NewEntry()
-	hostEntry.SetText(appState.Hostname)
-	hostEntry.OnChanged = func(val string) {
-		appState.Hostname = val
-		fyneApp.Preferences().SetString("hostname", val)
-	}
-
-	ipLabel = widget.NewLabel(appState.IP)
-	ipLabel.TextStyle = fyne.TextStyle{Monospace: true}
-
-	macValue := widget.NewLabel(appState.MAC)
-	macValue.TextStyle = fyne.TextStyle{Monospace: true}
-
-	osValue := widget.NewLabel(appState.OS)
-
-	statusLabel = widget.NewRichTextFromMarkdown("⏳ **Waiting...**")
-	stayAwakeLabel = widget.NewLabel("")
-	stayAwakeLabel.TextStyle = fyne.TextStyle{Bold: true}
-
-	onStayAwakeStateChanged = func(active bool) {
-		fyne.Do(func() {
-			if stayAwakeLabel != nil {
-				if active {
-					stayAwakeLabel.SetText("☕ Anti-Sleep: ON")
-				} else {
-					stayAwakeLabel.SetText("")
-				}
-				stayAwakeLabel.Refresh()
-			}
-		})
-	}
-	// Show current state if already active (e.g. after restart with plugin having it ON)
-	if isStayAwakeActive() {
-		stayAwakeLabel.SetText("☕ Anti-Sleep: ON")
-	}
-
-	infoForm := widget.NewForm(
-		widget.NewFormItem("Version", widget.NewLabel(clientVersion)),
-		widget.NewFormItem("Computer Name", hostEntry),
-		widget.NewFormItem("Local IP", ipLabel),
-		widget.NewFormItem("MAC Address", macValue),
-		widget.NewFormItem("Operating System", osValue),
-		widget.NewFormItem("Listening Port", widget.NewLabel(fmt.Sprintf("%d", flagPort))),
-		widget.NewFormItem("Status", statusLabel),
-		widget.NewFormItem("Anti-Sleep", stayAwakeLabel),
-	)
-
-	infoCard := widget.NewCard("", "Device Information", infoForm)
-
-	// ── Plugin URL entry ──
-	pluginEntry := widget.NewEntry()
-	pluginEntry.SetText(flagPluginURL)
-	pluginEntry.SetPlaceHolder("http://homebridge-ip:9090")
-	pluginEntry.OnChanged = func(val string) {
-		flagPluginURL = val
-		fyneApp.Preferences().SetString("plugin-url", val)
-	}
-
-	testBtn := widget.NewButton("Test", func() {
-		statusLabel.ParseMarkdown("⏳ **Testing...**")
-		statusLabel.Refresh()
-		go func() {
-			ok := sendHeartbeat(appState.Hostname, appState.IP, appState.MAC)
-			updateConnectionStatus(ok)
-		}()
-	})
-	pluginBox := container.NewBorder(nil, nil, nil, testBtn, pluginEntry)
-
-	pluginCard := widget.NewCard("", "Homebridge Plugin URL", pluginBox)
-
-	// ── Log viewer (heartbeat, update, errors) ──
-	logEntry := widget.NewMultiLineEntry()
-	logEntry.SetMinRowsVisible(4)
-	logEntry.Disable()
-	logEntry.Wrapping = fyne.TextWrapWord
-
-	refreshLogView = func() {
-		fyne.Do(func() {
-			if logEntry != nil {
-				lines := getLogLines()
-				var text string
-				for _, l := range lines {
-					if text != "" {
-						text += "\n"
-					}
-					text += l
-				}
-				logEntry.SetText(text)
-				if len(lines) > 0 {
-					logEntry.CursorRow = len(lines) - 1
-				}
-				logEntry.Refresh()
-			}
-		})
-	}
-
-	clearLogBtn := widget.NewButton("Clear", func() {
-		clearLog()
-	})
-	logToolbar := container.NewHBox(layout.NewSpacer(), clearLogBtn)
-	logCard := widget.NewCard("", "Log", container.NewBorder(nil, logToolbar, nil, nil, logEntry))
-
-	// ── Auto-start checkbox ──
-	autoStartCheck := widget.NewCheck("Run at Startup (Auto-Start)", func(checked bool) {
-		var asErr error
-		if checked {
-			asErr = enableAutoStart()
-		} else {
-			asErr = disableAutoStart()
-		}
-		if asErr != nil {
-			log.Printf("⚠️  Auto-start error: %v", asErr)
-			dialog.ShowError(fmt.Errorf("Failed to set auto-start: %v", asErr), mainWindow)
-		}
-	})
-	autoStartCheck.Checked = isAutoStartEnabled()
-
-	// ── Buttons ──
-	hideBtn := widget.NewButtonWithIcon("Hide", theme.VisibilityOffIcon(), func() {
-		mainWindow.Hide()
-	})
-	hideBtn.Importance = widget.MediumImportance
-
-	exitBtn := widget.NewButtonWithIcon("Exit", theme.CancelIcon(), func() {
-		fyneApp.Quit()
-	})
-	exitBtn.Importance = widget.DangerImportance
-
-	buttonBar := container.NewHBox(
-		layout.NewSpacer(),
-		hideBtn,
-		exitBtn,
-		layout.NewSpacer(),
-	)
-
-	// ── Assemble ──
-	return container.NewVBox(
-		header,
-		widget.NewSeparator(),
-		infoCard,
-		pluginCard,
-		logCard,
-		autoStartCheck,
-		layout.NewSpacer(),
-		widget.NewSeparator(),
-		buttonBar,
-	)
-}
+// buildMainUI is in ui_layout.go
 
 // ──────────────────────────────────────────────
 // System Tray
@@ -383,23 +229,24 @@ func showUpdateNotification(downloadURL string) {
 // updateConnectionStatus is called from background goroutines.
 func updateConnectionStatus(connected bool) {
 	appState.Connected = connected
-	if statusLabel == nil {
-		return
-	}
-
-	if connected {
-		statusLabel.ParseMarkdown("🟢 **Connected**")
-	} else {
-		statusLabel.ParseMarkdown("🔴 **Disconnected**")
-	}
-	statusLabel.Refresh()
+	fyne.Do(func() {
+		if statusDot == nil {
+			return
+		}
+		if connected {
+			statusDot.SetState(StatusDotOnline)
+		} else {
+			statusDot.SetState(StatusDotError)
+		}
+	})
 }
 
 // updateIPDisplay refreshes the IP label if it changed.
 func updateIPDisplay(newIP string) {
 	appState.IP = newIP
-	if ipLabel == nil {
-		return
-	}
-	ipLabel.SetText(newIP)
+	fyne.Do(func() {
+		if ipLabel != nil {
+			ipLabel.SetText(newIP)
+		}
+	})
 }

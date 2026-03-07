@@ -1,6 +1,6 @@
 {
   "name": "homebridge-computer-control",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Control your computers (Wake-on-LAN & Sleep) through Apple HomeKit via Homebridge",
   "main": "dist/index.js",
   "scripts": {

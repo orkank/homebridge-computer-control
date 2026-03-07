@@ -324,6 +324,14 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
         // Use existing token or generate new one (client must send token in all requests)
         const token = existing?.token || crypto.randomBytes(32).toString('hex');
 
+        const temperature = typeof data.temperature === 'number' && data.temperature > 0
+          ? data.temperature
+          : undefined;
+
+        this.log.info(
+          `📥 Registration payload: hostname=${data.hostname}, mac=${macKey}, temperature=${temperature ?? 'none'}${temperature ? ` (${temperature / 1000}°C)` : ''}`,
+        );
+
         const client: RegisteredClient = {
           hostname: data.hostname || 'Unknown',
           ip: data.ip,
@@ -334,12 +342,13 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           displayName: data.hostname || existing?.displayName || 'Computer',
           isDarkWake,
           token,
+          temperature,
         };
 
         this.clients.set(macKey, client);
         this.saveClients();
 
-        // Register or update the accessory (isDarkWake: do not set ONLINE)
+        // Register or update the accessory (isDarkWake: do not set ONLINE; temperature: add/remove sensor)
         this.addOrUpdateAccessory(macKey, client, isDarkWake);
 
         this.log.info(

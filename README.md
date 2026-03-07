@@ -6,11 +6,16 @@
 [![GitHub stars](https://img.shields.io/github/stars/orkank/homebridge-computer-control.svg)](https://github.com/orkank/homebridge-computer-control/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/orkank/homebridge-computer-control.svg)](https://github.com/orkank/homebridge-computer-control/network)
 
+<p align="center">
+  <img src="img1.png" alt="Home app" width="400">
+  <img src="img2.png" alt="Client app" width="400">
+</p>
+
 > ⚠️ **Test version** — This plugin is still in testing.
 
 Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homebridge. Wake them with WoL, put them to sleep remotely, and manage them as HomeKit switches.
 
-**Version:** 1.1.0
+**Version:** 1.1.1
 
 ## Features
 
@@ -25,6 +30,7 @@ Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homeb
 | **Token Auth** | Client and plugin use shared tokens; no unauthorized sleep/wake |
 | **Config UI** | View clients, remove stale ones, configure group name |
 | **Anti-Sleep** | Virtual switch to prevent all computers from sleeping (configurable name + optional timer) |
+| **Temperature Sensor** | Optional CPU temperature in HomeKit (client checkbox "Send Temperature Data"); Linux thermal/sensors, macOS ioreg, Windows WMI |
 
 ## Architecture
 
@@ -172,7 +178,18 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ## Changelog
 
-### 1.1.0 (Current)
+### 1.1.1 (Current)
+
+- **Temperature Sensor**: Optional CPU temperature in HomeKit
+  - Client checkbox "Send Temperature Data"; persisted in `client_config.json`
+  - macOS: gopsutil sensors (SMC/HID), ioreg, system_profiler, powermetrics
+  - Windows: WMI (MSAcpi_ThermalZoneTemperature, ThermalZoneInformation, Win32_TemperatureProbe)
+  - Linux: sysfs thermal zones, `sensors` fallback
+  - Dynamic add/remove of TemperatureSensor service based on client data
+- **Client**: Console theme (dark gray bg, green text)
+- **Windows**: HideWindow for exec (no console pop-ups); multi-WMI temperature fallbacks
+
+### 1.1.0
 
 - **Anti-Sleep device**: Virtual switch to prevent all computers from sleeping
   - Config: `antiSleepDeviceName` (default: "Computer Sleep Prevention"), `antiSleepTimer` (minutes, 0 = unlimited)
@@ -193,7 +210,6 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 - **Client port**: Default 45991 (was 8080) to avoid conflicts
 - **Config UI**: Delete clients from list; inline confirmation (no `window.confirm`); badge contrast fix
 - **HomeKit name**: When device display name changes, `updateDisplayName` + AccessoryInformation Name are updated
-- **macOS tray**: Exit menu item removed (Quit remains in app menu)
 - **Auto-start**: Removed `launchctl load`; plist is only created; second instance is prevented
 - **Response**: Removed raw fields from `displayState` (`ioregRaw`, `systemProfilerRaw`, `pmsetLastEvent`)
 
@@ -211,6 +227,17 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 | **macOS Hidden** | `.app` with `LSUIElement=true` — no Dock icon, no terminal |
 | **Windows Hidden** | Built with `-H windowsgui` — no console window |
 | **Version** | `--version` flag prints version; GUI shows version in header, info form, and About |
+| **Temperature** | Optional "Send Temperature Data" checkbox; persisted in `client_config.json`; only reads CPU temp when enabled (minimizes CPU load) |
+
+### Temperature Sensor (Optional)
+
+| Platform | Method |
+|---|---|
+| **Linux** | `/sys/class/thermal/thermal_zone*/temp` (prefer `x86_pkg_temp` or `cpu-thermal`); fallback: `sensors` (Package id 0 / Core 0) |
+| **macOS** | gopsutil sensors (SMC on Intel, HID on Apple Silicon); fallback: ioreg, system_profiler, powermetrics |
+| **Windows** | WMI `Win32_PerfFormattedData_Counters_ThermalZoneInformation` (HighPrecisionTemperature) |
+
+Value sent in millidegree Celsius; plugin converts to °C (÷1000). When checkbox is off, no temperature is sent and the TemperatureSensor service is removed from the accessory.
 
 ### macOS Sleep / Power Nap Mitigation
 

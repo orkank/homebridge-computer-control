@@ -237,10 +237,13 @@ export class AntiSleepAccessory {
  *
  * Status is determined by pinging the client.
  */
+const TEMPERATURE_SERVICE_SUBTYPE = 'cpu-temperature';
+
 export class ComputerAccessory {
   private service: Service;
   private client: RegisteredClient;
   private isOnline = false;
+  private temperatureService: Service | null = null;
 
   constructor(
     private readonly platform: ComputerControlPlatform,
@@ -274,6 +277,9 @@ export class ComputerAccessory {
       .onGet(this.handleOnGet.bind(this))
       .onSet(this.handleOnSet.bind(this));
 
+    // Add TemperatureSensor if client sends temperature data
+    this.updateTemperatureService(this.client.temperature);
+
     // Initial status check
     this.checkOnlineStatus();
   }
@@ -304,10 +310,52 @@ export class ComputerAccessory {
       infoService.updateCharacteristic(this.platform.Characteristic.Name, displayName);
     }
 
+    // Add/remove/update TemperatureSensor based on heartbeat data
+    this.updateTemperatureService(client.temperature);
+
     // Only set ONLINE if not Dark Wake (Power Nap)
     if (setOnline) {
       this.isOnline = true;
       this.service.updateCharacteristic(this.platform.Characteristic.On, true);
+    }
+  }
+
+  /**
+   * Add, remove, or update the TemperatureSensor service based on client temperature data.
+   * Millidegree → Celsius: divide by 1000.
+   */
+  private updateTemperatureService(temperatureMillidegree?: number | null): void {
+    const hasTemperature = typeof temperatureMillidegree === 'number' && temperatureMillidegree > 0;
+    const celsius = hasTemperature ? temperatureMillidegree / 1000 : 0;
+    let changed = false;
+
+    if (hasTemperature) {
+      if (!this.temperatureService) {
+        this.temperatureService =
+          this.accessory.getServiceById(this.platform.Service.TemperatureSensor, TEMPERATURE_SERVICE_SUBTYPE) ||
+          this.accessory.addService(
+            this.platform.Service.TemperatureSensor,
+            'CPU Temperature',
+            TEMPERATURE_SERVICE_SUBTYPE,
+          );
+        this.platform.log.info(`➕ TemperatureSensor added for ${this.client.hostname} (${celsius}°C)`);
+        changed = true;
+      }
+      this.temperatureService.updateCharacteristic(
+        this.platform.Characteristic.CurrentTemperature,
+        celsius,
+      );
+    } else {
+      if (this.temperatureService) {
+        this.accessory.removeService(this.temperatureService);
+        this.temperatureService = null;
+        this.platform.log.info(`🗑️ TemperatureSensor removed from ${this.client.hostname}`);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.platform.api.updatePlatformAccessories([this.accessory]);
     }
   }
 

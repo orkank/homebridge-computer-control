@@ -47,6 +47,8 @@ export interface RegisteredClient {
   displayName?: string;
   isDarkWake?: boolean; // macOS: Power Nap, plugin keeps device OFF
   token?: string; // Auth token for client requests (sleep, wake-screen, health)
+  /** CPU temperature in millidegree Celsius (÷1000 = °C); only when client sends it */
+  temperature?: number | null;
 }
 
 /**
