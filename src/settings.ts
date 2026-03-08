@@ -62,6 +62,8 @@ export interface ClientAction {
   value: string;
   interface: string; // toggle or button
   urlMode?: string; // fetch or browser, only when type is url
+  wakeBefore?: boolean;
+  sleepAfter?: boolean;
 }
 
 /**

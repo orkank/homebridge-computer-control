@@ -112,57 +112,55 @@ func startHTTPServer(hostname string) {
 	}
 }
 
-// handleSleep executes the platform-specific sleep command.
-func handleSleep(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost && r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	log.Println("💤 Sleep request received")
-	w.Header().Set("Content-Type", "application/json")
-
-	// Send "Going to Sleep" to Homebridge BEFORE sleeping so plugin can set device OFF immediately
+// triggerSleep puts the computer to sleep. Used by handleSleep and by runAction when SleepAfterAction.
+// macOS: pmset sleepnow. Windows: rundll32 powrprof. Linux: systemctl suspend.
+func triggerSleep() {
 	sendGoingToSleep(appState.MAC)
-
 	var cmd *exec.Cmd
-
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("osascript", "-e", `tell application "System Events" to sleep`)
+		cmd = exec.Command("pmset", "sleepnow")
 	case "windows":
 		cmd = exec.Command("rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0")
 		prepareCmd(cmd)
 	case "linux":
 		cmd = exec.Command("systemctl", "suspend")
 	default:
-		resp := SleepResponse{
-			Success: false,
-			Message: fmt.Sprintf("Unsupported OS: %s", runtime.GOOS),
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(resp)
+		log.Printf("⚠️  Sleep not supported on %s", runtime.GOOS)
 		return
 	}
-
-	// Send success BEFORE sleeping (machine won't respond after)
-	resp := SleepResponse{
-		Success: true,
-		Message: fmt.Sprintf("Sleep initiated on %s", runtime.GOOS),
+	time.Sleep(500 * time.Millisecond)
+	if err := cmd.Run(); err != nil {
+		if runtime.GOOS == "darwin" {
+			// Fallback: osascript (works without pmset privileges)
+			fallback := exec.Command("osascript", "-e", `tell application "System Events" to sleep`)
+			if fallbackErr := fallback.Run(); fallbackErr != nil {
+				log.Printf("⚠️  Sleep failed (pmset: %v, osascript: %v)", err, fallbackErr)
+			}
+		} else {
+			log.Printf("⚠️  Sleep command error: %v", err)
+		}
 	}
-	json.NewEncoder(w).Encode(resp)
+}
 
+// handleSleep executes the platform-specific sleep command.
+func handleSleep(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	log.Println("💤 Sleep request received")
+	w.Header().Set("Content-Type", "application/json")
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" && runtime.GOOS != "linux" {
+		json.NewEncoder(w).Encode(SleepResponse{Success: false, Message: fmt.Sprintf("Unsupported OS: %s", runtime.GOOS)})
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(SleepResponse{Success: true, Message: fmt.Sprintf("Sleep initiated on %s", runtime.GOOS)})
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-
-	// Execute with slight delay so response is delivered
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		if err := cmd.Run(); err != nil {
-			log.Printf("⚠️  Sleep command error: %v", err)
-		}
-	}()
+	go triggerSleep()
 }
 
 // sendGoingToSleep notifies Homebridge that this client is about to sleep.

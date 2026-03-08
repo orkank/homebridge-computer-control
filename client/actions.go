@@ -33,11 +33,13 @@ const (
 
 // Action represents a single automation action.
 type Action struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`      // btt_trigger, shell, batch, applescript, url
-	Value     string `json:"value"`     // command, script path, or URL
-	Interface string `json:"interface"` // toggle or button
-	URLMode   string `json:"urlMode,omitempty"` // fetch or browser, only when Type is url
+	Name              string `json:"name"`
+	Type              string `json:"type"`      // btt_trigger, shell, batch, applescript, url
+	Value             string `json:"value"`     // command, script path, or URL
+	Interface         string `json:"interface"` // toggle or button
+	URLMode           string `json:"urlMode,omitempty"`
+	WakeBeforeAction bool `json:"wakeBefore,omitempty"`
+	SleepAfterAction bool `json:"sleepAfter,omitempty"`
 }
 
 // ActionTypes for dropdown (all platforms)
@@ -130,6 +132,34 @@ func getActionsConfigPath() string {
 	}
 }
 
+// actionJSON supports both wakeBefore/wakeBeforeAction and sleepAfter/sleepAfterAction for backward compat.
+type actionJSON struct {
+	Name              string `json:"name"`
+	Type              string `json:"type"`
+	Value             string `json:"value"`
+	Interface         string `json:"interface"`
+	URLMode           string `json:"urlMode,omitempty"`
+	WakeBefore        bool   `json:"wakeBefore,omitempty"`
+	WakeBeforeAction  bool   `json:"wakeBeforeAction,omitempty"`
+	SleepAfter        bool   `json:"sleepAfter,omitempty"`
+	SleepAfterAction  bool   `json:"sleepAfterAction,omitempty"`
+}
+
+func (a *Action) UnmarshalJSON(data []byte) error {
+	var j actionJSON
+	if err := json.Unmarshal(data, &j); err != nil {
+		return err
+	}
+	a.Name = j.Name
+	a.Type = j.Type
+	a.Value = j.Value
+	a.Interface = j.Interface
+	a.URLMode = j.URLMode
+	a.WakeBeforeAction = j.WakeBefore || j.WakeBeforeAction
+	a.SleepAfterAction = j.SleepAfter || j.SleepAfterAction
+	return nil
+}
+
 func loadActionsConfig() ActionsConfig {
 	data, err := os.ReadFile(actionsPath)
 	if err != nil {
@@ -138,7 +168,9 @@ func loadActionsConfig() ActionsConfig {
 		}
 		return ActionsConfig{Actions: []Action{}}
 	}
-	var c ActionsConfig
+	var c struct {
+		Actions []Action `json:"actions"`
+	}
 	if err := json.Unmarshal(data, &c); err != nil {
 		log.Printf("⚠️  Failed to parse actions.json: %v", err)
 		return ActionsConfig{Actions: []Action{}}
@@ -146,7 +178,7 @@ func loadActionsConfig() ActionsConfig {
 	if c.Actions == nil {
 		c.Actions = []Action{}
 	}
-	return c
+	return ActionsConfig{Actions: c.Actions}
 }
 
 func saveActionsConfig(c ActionsConfig) {

@@ -461,6 +461,18 @@ func buildActionsContent() fyne.CanvasObject {
 		ActionInterfaceLabels[ActionInterfaceButton],
 	}, nil)
 	interfaceSelect.SetSelected(ActionInterfaceLabels[ActionInterfaceToggle])
+	wakeBeforeRadio := widget.NewRadioGroup([]string{"Yes", "No"}, nil)
+	wakeBeforeRadio.SetSelected("No")
+	wakeBeforeHint := widget.NewRichTextWithText("Same as standard wake: WoL → 5s delay → wake-screen (display on) → run-action.")
+	wakeBeforeHint.Wrapping = fyne.TextWrapWord
+	wakeBeforeHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+	wakeBeforeHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
+	sleepAfterRadio := widget.NewRadioGroup([]string{"Yes", "No"}, nil)
+	sleepAfterRadio.SetSelected("No")
+	sleepAfterHint := widget.NewRichTextWithText("5s after action triggers, client runs OS sleep (pmset/rundll32/systemctl).")
+	sleepAfterHint.Wrapping = fyne.TextWrapWord
+	sleepAfterHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+	sleepAfterHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
 	updateInterfaceHint := func() {
 		if interfaceSelect.Selected == ActionInterfaceLabels[ActionInterfaceButton] {
 			interfaceHint.Segments[0].(*widget.TextSegment).Text = "Push Button: {status} is always \"on\" — no Off concept. Use for one-shot actions."
@@ -491,10 +503,12 @@ func buildActionsContent() fyne.CanvasObject {
 			interfaceVal = ActionInterfaceButton
 		}
 		a := Action{
-			Name:      name,
-			Type:      NormalizeActionType(typeSelect.Selected),
-			Value:     strings.TrimSpace(valueEntry.Text),
-			Interface: interfaceVal,
+			Name:             name,
+			Type:             NormalizeActionType(typeSelect.Selected),
+			Value:            strings.TrimSpace(valueEntry.Text),
+			Interface:        interfaceVal,
+			WakeBeforeAction: wakeBeforeRadio.Selected == "Yes",
+			SleepAfterAction: sleepAfterRadio.Selected == "Yes",
 		}
 		if a.Type == ActionTypeURL {
 			if urlModeSelect.Selected == URLModeLabels[URLModeBrowser] {
@@ -530,6 +544,12 @@ func buildActionsContent() fyne.CanvasObject {
 		secondaryLabel("Interface"),
 		interfaceSelect,
 		interfaceHint,
+		secondaryLabel("Wake Computer Before Action"),
+		wakeBeforeRadio,
+		wakeBeforeHint,
+		secondaryLabel("Sleep Device After Action"),
+		sleepAfterRadio,
+		sleepAfterHint,
 		addBtn,
 	)
 

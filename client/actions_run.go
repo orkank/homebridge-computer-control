@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // bttcliFullPath is the default location of bttcli on macOS.
@@ -37,6 +38,13 @@ func runAction(a Action, state string) {
 		runURLAction(a, val)
 	default:
 		log.Printf("⚠️  Unknown action type: %s", a.Type)
+	}
+
+	if a.SleepAfterAction {
+		go func() {
+			time.Sleep(5 * time.Second) // Allow action to complete before sleep
+			triggerSleep()
+		}()
 	}
 }
 

@@ -298,13 +298,7 @@ export class ActionAccessory {
       if (!targetState) {
         return; // User or our auto-reset set OFF — no command, no loop
       }
-      this.platform.sendRunActionRequest(
-        this.client.ip,
-        this.client.port,
-        this.action.name,
-        'on',
-        this.client.token,
-      );
+      this.runActionWithWake('on');
       this.platform.log.info(`🔘 Action button: ${this.action.name} (${this.client.hostname})`);
       // Auto-reset: programmatically set OFF after 500ms. updateCharacteristic does NOT trigger onSet (no loop).
       setTimeout(() => {
@@ -315,15 +309,35 @@ export class ActionAccessory {
       // Toggle: state memory — remember last state, fire run-action
       this.lastState = targetState;
       const state = targetState ? 'on' : 'off';
-      this.platform.sendRunActionRequest(
-        this.client.ip,
-        this.client.port,
-        this.action.name,
-        state,
-        this.client.token,
-      );
+      this.runActionWithWake(state);
       this.platform.log.info(`🔘 Action toggle: ${this.action.name} = ${state} (${this.client.hostname})`);
     }
+  }
+
+  private async runActionWithWake(state: 'on' | 'off'): Promise<void> {
+    // Same flow as standard wake: WoL -> 5s delay -> wake-screen (full display) -> run-action
+    if (this.action.wakeBefore && this.client.mac) {
+      this.platform.log.info(`⏰ Wake before action: ${this.client.hostname}`);
+      await this.platform.sendWakeOnLan(this.client.mac);
+      await new Promise((r) => setTimeout(r, 5000)); // 5s for deep sleep wake (same as standard wake)
+      const wakeScreenOk = await this.platform.sendWakeScreenRequest(
+        this.client.ip,
+        this.client.port,
+        this.client.token,
+      );
+      if (wakeScreenOk) {
+        this.platform.log.info(`✅ Wake-screen sent (display on): ${this.client.hostname}`);
+      } else {
+        this.platform.log.debug(`⚠️  Wake-screen failed for ${this.client.hostname} (may be non-macOS or not yet online)`);
+      }
+    }
+    await this.platform.sendRunActionRequest(
+      this.client.ip,
+      this.client.port,
+      this.action.name,
+      state,
+      this.client.token,
+    );
   }
 }
 

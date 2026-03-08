@@ -21,7 +21,7 @@
 
 Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homebridge. Wake them with WoL, put them to sleep remotely, and manage them as HomeKit switches.
 
-**Version:** 1.1.4
+**Version:** 1.1.5
 
 ### 🎯 Custom Actions — One-Tap HomeKit Accessories
 
@@ -40,6 +40,10 @@ Define actions in the client **Actions** tab; they appear instantly as switches 
 **Trigger by UUID:** You can also trigger any BTT trigger by its UUID: `execute_assigned_actions_for_trigger 823A845F-8D62-4950-8709-1CE5527CEADF`. Find the UUID in BTT (right-click trigger → Copy UUID) and add it as an action — no need to use the trigger name.
 
 **Example uses:** Mute/unmute, show notifications, set variables, open URLs, run scripts, trigger shortcuts. Choose Toggle (remembers state) or Push Button (one-shot).
+
+**Wake Before / Sleep After:** Each action can optionally enable:
+- **Wake Computer Before Action** — Same flow as standard wake: WoL → 5s delay → wake-screen (display on) → run-action. Ensures display wakes from Dark Wake.
+- **Sleep Device After Action** — 5 seconds after the action triggers, the client runs the OS sleep command (macOS: pmset sleepnow, Windows: rundll32, Linux: systemctl suspend).
 
 ## Features
 
@@ -217,7 +221,13 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ## Changelog
 
-### 1.1.4 (Current)
+### 1.1.5 (Current)
+
+- **Wake Before Action**: Per-action option to wake the computer before running (WoL → 5s delay → wake-screen → run-action). Same flow as standard wake; display wakes from Dark Wake.
+- **Sleep After Action**: Per-action option to put the computer to sleep 5 seconds after the action triggers. macOS: `pmset sleepnow` (osascript fallback). Stored as `wakeBefore` and `sleepAfter` in `actions.json`.
+- **Config defaults**: Custom UI merges missing defaults when config is minimal (name, registrationPort, etc.).
+
+### 1.1.4
 
 - **Custom Actions**: Define actions in the client (BTT, shell, batch, AppleScript, URL) — they appear as HomeKit switches or tap buttons
   - Client Actions tab: add/delete actions; `actions.json` storage; heartbeat includes actions
@@ -277,7 +287,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 |---|---|
 | **Auto-Detection** | IP, MAC address, hostname detected on startup |
 | **Heartbeat** | Sends registration every 30 seconds |
-| **Sleep (macOS)** | `osascript -e 'tell application "System Events" to sleep'` |
+| **Sleep (macOS)** | `pmset sleepnow` (osascript fallback) |
 | **Sleep (Windows)** | `rundll32.exe powrprof.dll,SetSuspendState 0,1,0` |
 | **Sleep (Linux)** | `systemctl suspend` |
 | **macOS Hidden** | `.app` with `LSUIElement=true` — no Dock icon, no terminal |
