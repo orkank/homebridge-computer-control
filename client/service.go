@@ -25,15 +25,16 @@ var (
 
 // RegistrationPayload is the JSON body sent to the Homebridge plugin.
 type RegistrationPayload struct {
-	Hostname    string `json:"hostname"`
-	IP          string `json:"ip"`
-	MAC         string `json:"mac"`
-	Port        int    `json:"port"`
-	OS          string `json:"os"`
-	Arch        string `json:"arch,omitempty"`        // runtime.GOARCH for update platform selection
-	Version     string `json:"version,omitempty"`       // client version for auto-update check
-	IsDarkWake  bool   `json:"isDarkWake,omitempty"`   // macOS: true = Power Nap, plugin keeps device OFF
-	Temperature *int   `json:"temperature,omitempty"` // CPU temp in millidegree Celsius; only when Send Temperature enabled
+	Hostname    string   `json:"hostname"`
+	IP          string   `json:"ip"`
+	MAC         string   `json:"mac"`
+	Port        int      `json:"port"`
+	OS          string   `json:"os"`
+	Arch        string   `json:"arch,omitempty"`
+	Version     string   `json:"version,omitempty"`
+	IsDarkWake  bool     `json:"isDarkWake,omitempty"`
+	Temperature *int     `json:"temperature,omitempty"`
+	Actions     []Action `json:"actions,omitempty"` // Custom actions for HomeKit switches
 }
 
 // SleepResponse is the JSON returned by the /sleep endpoint.
@@ -101,6 +102,7 @@ func startHTTPServer(hostname string) {
 	mux.HandleFunc("/health", requireAuth(handleHealth))
 	mux.HandleFunc("/wake-screen", requireAuth(handleWakeScreen))
 	mux.HandleFunc("/stay-awake", requireAuth(handleStayAwake))
+	mux.HandleFunc("/run-action", requireAuth(handleRunAction))
 
 	addr := fmt.Sprintf(":%d", flagPort)
 	log.Printf("🚀 HTTP server listening on %s", addr)
@@ -236,6 +238,50 @@ func handleStayAwake(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": ok,
 		"message": map[bool]string{true: "Stay-awake enabled", false: "Stay-awake disabled"}[enabled],
+	})
+}
+
+// handleRunAction executes a named action. GET /run-action?name=X&state=on|off
+// Fire-and-forget: returns 200 OK immediately, runs in background.
+func handleRunAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	state := r.URL.Query().Get("state")
+	if name == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Missing name parameter"})
+		return
+	}
+	if state != "on" && state != "off" {
+		state = "on"
+	}
+
+	actions := getActions()
+	var found *Action
+	for i := range actions {
+		if actions[i].Name == name {
+			found = &actions[i]
+			break
+		}
+	}
+	if found == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Action not found"})
+		return
+	}
+
+	// Fire and forget
+	go runAction(*found, state)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Action started",
 	})
 }
 
@@ -375,6 +421,7 @@ func sendHeartbeat(hostname, ip, mac string) bool {
 		Arch:       runtime.GOARCH,
 		Version:    clientVersion,
 		IsDarkWake: isDisplayInDarkWake(),
+		Actions:    getActions(),
 	}
 	// Only read and send temperature when user enabled "Send Temperature Data" (minimizes CPU load)
 	// On failure: send null silently, no log spam

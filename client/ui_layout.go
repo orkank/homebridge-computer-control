@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -99,13 +100,15 @@ func buildMainUI() fyne.CanvasObject {
 	contentArea := container.NewMax()
 
 	dashboardContent := buildDashboardContent()
+	actionsContent := buildActionsContent()
 	settingsContent := buildSettingsContent()
 	logsContent := buildLogsContent()
 
 	// ── Sidebar items ──
-	var dashItem, settItem, logItem *sidebarItem
+	var dashItem, actItem, settItem, logItem *sidebarItem
 	selectItem := func(which *sidebarItem) {
 		dashItem.SetSelected(which == dashItem)
+		actItem.SetSelected(which == actItem)
 		settItem.SetSelected(which == settItem)
 		logItem.SetSelected(which == logItem)
 	}
@@ -113,6 +116,11 @@ func buildMainUI() fyne.CanvasObject {
 	dashItem = newSidebarItem("Dashboard", theme.HomeIcon(), func() {
 		selectItem(dashItem)
 		contentArea.Objects = []fyne.CanvasObject{dashboardContent}
+		contentArea.Refresh()
+	})
+	actItem = newSidebarItem("Actions", theme.ContentAddIcon(), func() {
+		selectItem(actItem)
+		contentArea.Objects = []fyne.CanvasObject{actionsContent}
 		contentArea.Refresh()
 	})
 	settItem = newSidebarItem("Settings", theme.SettingsIcon(), func() {
@@ -133,6 +141,7 @@ func buildMainUI() fyne.CanvasObject {
 	sidebarList := container.NewVBox(
 		layout.NewSpacer(),
 		dashItem,
+		actItem,
 		settItem,
 		logItem,
 		layout.NewSpacer(),
@@ -140,7 +149,7 @@ func buildMainUI() fyne.CanvasObject {
 
 	// Sidebar background (theme-aware: light/dark)
 	sidebarBg := newThemeAwareRect(macLightSidebar, macDarkSidebar)
-	themeDependentWidgets = append(themeDependentWidgets, sidebarBg, dashItem, settItem, logItem)
+	themeDependentWidgets = append(themeDependentWidgets, sidebarBg, dashItem, actItem, settItem, logItem)
 	sidebarContainer := container.NewStack(sidebarBg, container.NewPadded(sidebarList))
 
 	// Vertical separator (theme-aware)
@@ -350,6 +359,198 @@ func buildDashboardContent() fyne.CanvasObject {
 		),
 		layout.NewSpacer(),
 	)
+}
+
+// ──────────────────────────────────────────────
+// Actions
+// ──────────────────────────────────────────────
+
+func buildActionsContent() fyne.CanvasObject {
+	title := widget.NewRichTextWithText("Actions")
+	title.Segments[0].(*widget.TextSegment).Style.TextStyle = fyne.TextStyle{Bold: true}
+
+	desc := widget.NewRichTextWithText("Define custom actions that appear as switches or buttons in HomeKit. Use {status} in Value to inject on/off.")
+	desc.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+	desc.Wrapping = fyne.TextWrapWord
+
+	actionsList := container.NewVBox()
+	var refreshList func()
+	refreshList = func() {
+		actionsList.Objects = nil
+		for _, a := range getActions() {
+			aa := a
+			interfaceLabel := a.Interface
+			if l, ok := ActionInterfaceLabels[a.Interface]; ok {
+				interfaceLabel = l
+			}
+			delBtn := widget.NewButton("Delete", func() {
+				actions := getActions()
+				var out []Action
+				for _, x := range actions {
+					if x.Name != aa.Name {
+						out = append(out, x)
+					}
+				}
+				setActions(out)
+				refreshList()
+			})
+			delBtn.Importance = widget.HighImportance
+			row := container.NewHBox(
+				widget.NewLabel(a.Name),
+				widget.NewLabel(a.Type),
+				widget.NewLabel(interfaceLabel),
+				layout.NewSpacer(),
+				delBtn,
+			)
+			actionsList.Add(row)
+		}
+		actionsList.Refresh()
+	}
+	refreshList()
+
+	nameEntry := widget.NewEntry()
+	nameEntry.SetPlaceHolder("HomeKit display name")
+	nameHint := widget.NewRichTextWithText("Karışıklık olmasın diye bizce \"Bilgisayar Adı - Aksiyon Adı\" formatında yazmanızı öneririz.")
+	nameHint.Wrapping = fyne.TextWrapWord
+	nameHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+	nameHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
+	typeSelect := widget.NewSelect(ActionTypesForPlatform(), nil)
+	typeSelect.SetSelected(ActionTypeShell)
+	valueEntry := widget.NewEntry()
+	valueEntry.SetPlaceHolder("Command, script path, or URL. Use {status} for on/off")
+	valueEntry.Wrapping = fyne.TextWrapWord
+	valueEntry.MultiLine = true
+	valueEntry.SetMinRowsVisible(2)
+	bttHint := widget.NewRichTextWithText("")
+	bttHint.Wrapping = fyne.TextWrapWord
+	bttHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+	bttHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
+	urlModeSelect := widget.NewSelect([]string{
+		URLModeLabels[URLModeFetch],
+		URLModeLabels[URLModeBrowser],
+	}, nil)
+	urlModeSelect.SetSelected(URLModeLabels[URLModeFetch])
+	urlModeRow := container.NewVBox(secondaryLabel("URL mode"), urlModeSelect)
+	updateBTTHint := func() {
+		if typeSelect.Selected == ActionTypeBTTTrigger {
+			bttHint.Segments[0].(*widget.TextSegment).Text = "BTT: Full CLI command (bttcli auto-prefixed). Enable CLI in BTT Scripting Settings first. Examples: trigger_named \"mute\", execute_assigned_actions_for_trigger <UUID>, display_notification \"Hi\""
+			valueEntry.SetPlaceHolder("trigger_named \"mute\" | execute_assigned_actions_for_trigger <UUID> | ...")
+			urlModeRow.Hide()
+		} else if typeSelect.Selected == ActionTypeAppleScript {
+			bttHint.Segments[0].(*widget.TextSegment).Text = "File path (.applescript/.scpt) or inline script. Path: ~/path/to/script.applescript. Inline: display notification \"Hi\" with title \"Title\""
+			valueEntry.SetPlaceHolder("~/Downloads/example.applescript | display notification \"Hi\"")
+			urlModeRow.Hide()
+		} else if typeSelect.Selected == ActionTypeURL {
+			bttHint.Segments[0].(*widget.TextSegment).Text = ""
+			valueEntry.SetPlaceHolder("URL (e.g. https://example.com/action). Use {status} for on/off")
+			urlModeRow.Show()
+		} else {
+			bttHint.Segments[0].(*widget.TextSegment).Text = ""
+			valueEntry.SetPlaceHolder("Command, script path, or URL. Use {status} for on/off")
+			urlModeRow.Hide()
+		}
+		bttHint.Refresh()
+		valueEntry.Refresh()
+	}
+	interfaceHint := widget.NewRichTextWithText("")
+	interfaceHint.Wrapping = fyne.TextWrapWord
+	interfaceHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+	interfaceHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
+	interfaceSelect := widget.NewSelect([]string{
+		ActionInterfaceLabels[ActionInterfaceToggle],
+		ActionInterfaceLabels[ActionInterfaceButton],
+	}, nil)
+	interfaceSelect.SetSelected(ActionInterfaceLabels[ActionInterfaceToggle])
+	updateInterfaceHint := func() {
+		if interfaceSelect.Selected == ActionInterfaceLabels[ActionInterfaceButton] {
+			interfaceHint.Segments[0].(*widget.TextSegment).Text = "Push Button: {status} is always \"on\" — no Off concept. Use for one-shot actions."
+		} else {
+			interfaceHint.Segments[0].(*widget.TextSegment).Text = ""
+		}
+		interfaceHint.Refresh()
+	}
+	typeSelect.OnChanged = func(_ string) { updateBTTHint(); updateInterfaceHint() }
+	interfaceSelect.OnChanged = func(_ string) { updateInterfaceHint() }
+	urlModeRow.Hide()
+
+	addBtn := widget.NewButton("Add Action", func() {
+		name := strings.TrimSpace(nameEntry.Text)
+		if name == "" {
+			dialog.ShowError(fmt.Errorf("Name is required"), mainWindow)
+			return
+		}
+		actions := getActions()
+		for _, x := range actions {
+			if x.Name == name {
+				dialog.ShowError(fmt.Errorf("Action with name %q already exists", name), mainWindow)
+				return
+			}
+		}
+		interfaceVal := ActionInterfaceToggle
+		if interfaceSelect.Selected == ActionInterfaceLabels[ActionInterfaceButton] {
+			interfaceVal = ActionInterfaceButton
+		}
+		a := Action{
+			Name:      name,
+			Type:      NormalizeActionType(typeSelect.Selected),
+			Value:     strings.TrimSpace(valueEntry.Text),
+			Interface: interfaceVal,
+		}
+		if a.Type == ActionTypeURL {
+			if urlModeSelect.Selected == URLModeLabels[URLModeBrowser] {
+				a.URLMode = URLModeBrowser
+			} else {
+				a.URLMode = URLModeFetch
+			}
+		}
+		if a.Value == "" {
+			dialog.ShowError(fmt.Errorf("Value is required"), mainWindow)
+			return
+		}
+		setActions(append(actions, a))
+		nameEntry.SetText("")
+		valueEntry.SetText("")
+		refreshList()
+	})
+	addBtn.Importance = widget.HighImportance
+
+	updateBTTHint()
+	updateInterfaceHint()
+
+	form := container.NewVBox(
+		secondaryLabel("Name"),
+		nameEntry,
+		nameHint,
+		secondaryLabel("Type"),
+		typeSelect,
+		secondaryLabel("Value (command, path, or URL)"),
+		valueEntry,
+		bttHint,
+		urlModeRow,
+		secondaryLabel("Interface"),
+		interfaceSelect,
+		interfaceHint,
+		addBtn,
+	)
+
+	sepLight := color.NRGBA{R: 0xd1, G: 0xd1, B: 0xd6, A: 0x40}
+	sepDark := color.NRGBA{R: 0x48, G: 0x48, B: 0x4a, A: 0x40}
+	sep := newThemeAwareRect(sepLight, sepDark)
+	sep.SetMinSize(fyne.NewSize(1, 0.5))
+	themeDependentWidgets = append(themeDependentWidgets, sep)
+
+	// Entire tab scrolls as one; no inner scroll on actions list; bottom padding
+	content := container.NewVBox(
+		title,
+		desc,
+		container.NewPadded(form),
+		sep,
+		widget.NewRichTextWithText("Current Actions"),
+		actionsList,
+		layout.NewSpacer(),
+		layout.NewSpacer(), // extra bottom padding
+	)
+	return container.NewScroll(container.NewPadded(content))
 }
 
 // ──────────────────────────────────────────────

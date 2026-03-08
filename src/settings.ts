@@ -49,6 +49,19 @@ export interface RegisteredClient {
   token?: string; // Auth token for client requests (sleep, wake-screen, health)
   /** CPU temperature in millidegree Celsius (÷1000 = °C); only when client sends it */
   temperature?: number | null;
+  /** Custom actions from client (HomeKit switches/buttons) */
+  actions?: ClientAction[];
+}
+
+/**
+ * Custom action from client (BTT, shell, URL, etc.).
+ */
+export interface ClientAction {
+  name: string;
+  type: string; // btt_trigger, shell, batch, applescript, url
+  value: string;
+  interface: string; // toggle or button
+  urlMode?: string; // fetch or browser, only when type is url
 }
 
 /**

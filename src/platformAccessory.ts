@@ -5,7 +5,7 @@ import {
 } from 'homebridge';
 
 import { ComputerControlPlatform } from './platform';
-import { RegisteredClient } from './settings';
+import { RegisteredClient, ClientAction } from './settings';
 
 export const GROUP_ACCESSORY_UUID = 'computer-control-group';
 export const ANTI_SLEEP_ACCESSORY_UUID = 'computer-control-anti-sleep';
@@ -238,6 +238,94 @@ export class AntiSleepAccessory {
  * Status is determined by pinging the client.
  */
 const TEMPERATURE_SERVICE_SUBTYPE = 'cpu-temperature';
+
+/**
+ * ActionAccessory
+ *
+ * Custom action from client (BTT, shell, URL, etc.).
+ * - Toggle: State memory — last HomeKit state is remembered, no polling.
+ * - Button: Single tap fires "on", then resets to OFF.
+ */
+export class ActionAccessory {
+  public readonly accessory: PlatformAccessory;
+  private service: Service;
+  private lastState = false; // For toggle: remembered state
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    accessory: PlatformAccessory,
+    private client: RegisteredClient,
+    private action: ClientAction,
+  ) {
+    this.accessory = accessory;
+
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, action.name)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Action')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, `action-${client.mac}-${action.name}`);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Switch) ||
+      this.accessory.addService(this.platform.Service.Switch);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, action.name);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.handleOnGet.bind(this))
+      .onSet(this.handleOnSet.bind(this));
+
+    // Initial state
+    this.service.updateCharacteristic(this.platform.Characteristic.On, this.lastState);
+  }
+
+  public updateAction(action: ClientAction): void {
+    this.action = action;
+    this.service.setCharacteristic(this.platform.Characteristic.Name, action.name);
+  }
+
+  private handleOnGet(): CharacteristicValue {
+    return this.lastState;
+  }
+
+  private async handleOnSet(value: CharacteristicValue): Promise<void> {
+    const targetState = value as boolean;
+
+    if (this.action.interface === 'button') {
+      // Push Button: only react to ON (user tap). Ignore OFF — we auto-reset, never send off to client.
+      if (!targetState) {
+        return; // User or our auto-reset set OFF — no command, no loop
+      }
+      this.platform.sendRunActionRequest(
+        this.client.ip,
+        this.client.port,
+        this.action.name,
+        'on',
+        this.client.token,
+      );
+      this.platform.log.info(`🔘 Action button: ${this.action.name} (${this.client.hostname})`);
+      // Auto-reset: programmatically set OFF after 500ms. updateCharacteristic does NOT trigger onSet (no loop).
+      setTimeout(() => {
+        this.lastState = false;
+        this.service.updateCharacteristic(this.platform.Characteristic.On, false);
+      }, 500);
+    } else {
+      // Toggle: state memory — remember last state, fire run-action
+      this.lastState = targetState;
+      const state = targetState ? 'on' : 'off';
+      this.platform.sendRunActionRequest(
+        this.client.ip,
+        this.client.port,
+        this.action.name,
+        state,
+        this.client.token,
+      );
+      this.platform.log.info(`🔘 Action toggle: ${this.action.name} = ${state} (${this.client.hostname})`);
+    }
+  }
+}
 
 export class ComputerAccessory {
   private service: Service;

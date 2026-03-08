@@ -24,9 +24,10 @@ import {
   PING_TIMEOUT,
   SLEEP_DEBOUNCE_SECONDS,
   RegisteredClient,
+  ClientAction,
 } from './settings';
 
-import { ComputerAccessory, GroupComputerAccessory, AntiSleepAccessory, GROUP_ACCESSORY_UUID, ANTI_SLEEP_ACCESSORY_UUID } from './platformAccessory';
+import { ComputerAccessory, GroupComputerAccessory, AntiSleepAccessory, ActionAccessory, GROUP_ACCESSORY_UUID, ANTI_SLEEP_ACCESSORY_UUID } from './platformAccessory';
 
 /**
  * Maps URL path segments to actual binary file names in the /bin directory.
@@ -117,6 +118,7 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
   // Managed accessory handlers
   private readonly computerAccessories: Map<string, ComputerAccessory> = new Map();
+  private readonly actionAccessories: Map<string, ActionAccessory> = new Map(); // key: mac:actionName
   private groupAccessory: GroupComputerAccessory | null = null;
   private antiSleepAccessory: AntiSleepAccessory | null = null;
 
@@ -332,6 +334,10 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           `📥 Registration payload: hostname=${data.hostname}, mac=${macKey}, temperature=${temperature ?? 'none'}${temperature ? ` (${temperature / 1000}°C)` : ''}`,
         );
 
+        const actions: ClientAction[] = Array.isArray((data as { actions?: ClientAction[] }).actions)
+          ? (data as { actions?: ClientAction[] }).actions!
+          : [];
+
         const client: RegisteredClient = {
           hostname: data.hostname || 'Unknown',
           ip: data.ip,
@@ -343,6 +349,7 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           isDarkWake,
           token,
           temperature,
+          actions,
         };
 
         this.clients.set(macKey, client);
@@ -350,6 +357,9 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
         // Register or update the accessory (isDarkWake: do not set ONLINE; temperature: add/remove sensor)
         this.addOrUpdateAccessory(macKey, client, isDarkWake);
+
+        // Add/update/remove action accessories for this client
+        this.addOrUpdateActionAccessories(macKey, client);
 
         this.log.info(
           `💓 Registration from ${client.hostname} (${client.ip} / ${client.mac})${isDarkWake ? ' [Dark Wake — kept OFF]' : ''}`,
@@ -563,13 +573,18 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
     // Add or update the Anti-Sleep accessory (if configured)
     this.addOrUpdateAntiSleepAccessory();
 
-    // Remove any client accessories that no longer have a corresponding client
-    // (keep the group accessory)
+    // Build set of valid accessory UUIDs: clients + their actions + group + antiSleep
     const clientUUIDs = new Set(
       Array.from(this.clients.keys()).map((mac) =>
         this.api.hap.uuid.generate(mac),
       ),
     );
+    const actionUUIDs = new Set<string>();
+    for (const [macKey, client] of this.clients) {
+      for (const a of client.actions || []) {
+        actionUUIDs.add(this.api.hap.uuid.generate(`action-${macKey}-${a.name}`));
+      }
+    }
     const groupUUID = this.api.hap.uuid.generate(GROUP_ACCESSORY_UUID);
     const antiSleepUUID = this.api.hap.uuid.generate(ANTI_SLEEP_ACCESSORY_UUID);
 
@@ -577,7 +592,8 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       (acc) =>
         acc.UUID !== groupUUID &&
         acc.UUID !== antiSleepUUID &&
-        !clientUUIDs.has(acc.UUID),
+        !clientUUIDs.has(acc.UUID) &&
+        !actionUUIDs.has(acc.UUID),
     );
 
     if (accessoriesToRemove.length > 0) {
@@ -724,6 +740,83 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       this.accessories.splice(index, 1);
       this.computerAccessories.delete(macKey);
       this.log.info(`🗑️  Removed accessory: ${accessory.displayName}`);
+    }
+
+    // Remove action accessories for this client
+    this.removeActionAccessoriesForClient(macKey);
+  }
+
+  /**
+   * Add or update action accessories for a client. Removes actions no longer in the list.
+   */
+  private addOrUpdateActionAccessories(macKey: string, client: RegisteredClient): void {
+    const actions = client.actions || [];
+    const currentKeys = new Set(actions.map((a) => `${macKey}:${a.name}`));
+
+    // Remove action accessories that are no longer in the list
+    const keysToRemove = Array.from(this.actionAccessories.keys()).filter(
+      (key) => key.startsWith(macKey + ':') && !currentKeys.has(key),
+    );
+    for (const key of keysToRemove) {
+      const handler = this.actionAccessories.get(key);
+      if (handler) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [handler.accessory]);
+        const idx = this.accessories.indexOf(handler.accessory);
+        if (idx >= 0) this.accessories.splice(idx, 1);
+      }
+      this.actionAccessories.delete(key);
+    }
+
+    for (const action of actions) {
+      if (!action.name || !action.interface) continue;
+      const key = `${macKey}:${action.name}`;
+      const uuid = this.api.hap.uuid.generate(`action-${macKey}-${action.name}`);
+      const displayName = action.name;
+      const existing = this.accessories.find((acc) => acc.UUID === uuid);
+
+      if (existing) {
+        existing.updateDisplayName(displayName);
+        const infoService = existing.getService(this.Service.AccessoryInformation);
+        if (infoService) {
+          infoService.updateCharacteristic(this.Characteristic.Name, displayName);
+        }
+        this.api.updatePlatformAccessories([existing]);
+
+        if (this.actionAccessories.has(key)) {
+          this.actionAccessories.get(key)!.updateAction(action);
+        } else {
+          this.actionAccessories.set(key, new ActionAccessory(this, existing, client, action));
+        }
+      } else {
+        const accessory = new this.api.platformAccessory(displayName, uuid);
+        accessory.context.isAction = true;
+        accessory.context.client = client;
+        accessory.context.action = action;
+
+        const handler = new ActionAccessory(this, accessory, client, action);
+        this.actionAccessories.set(key, handler);
+
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.push(accessory);
+        this.log.info(`➕ Added action accessory: ${displayName}`);
+      }
+    }
+  }
+
+  /**
+   * Remove all action accessories for a client (when client is removed).
+   */
+  private removeActionAccessoriesForClient(macKey: string): void {
+    for (const key of this.actionAccessories.keys()) {
+      if (key.startsWith(macKey + ':')) {
+        const handler = this.actionAccessories.get(key);
+        if (handler) {
+          this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [handler.accessory]);
+          this.accessories.splice(this.accessories.indexOf(handler.accessory), 1);
+          this.log.info(`🗑️  Removed action accessory: ${handler.accessory.displayName}`);
+        }
+        this.actionAccessories.delete(key);
+      }
     }
   }
 
@@ -881,6 +974,55 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
               resolve(data.success === true);
             } catch {
               resolve(false);
+            }
+          });
+        },
+      );
+
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+
+      req.end();
+    });
+  }
+
+  /**
+   * Send run-action request to a client. Fire-and-forget; returns true if request was sent.
+   */
+  public sendRunActionRequest(
+    ip: string,
+    port: number,
+    actionName: string,
+    state: 'on' | 'off',
+    token?: string,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      const headers: Record<string, string> = {};
+      if (token) headers['X-Auth-Token'] = token;
+
+      const path = `/run-action?name=${encodeURIComponent(actionName)}&state=${state}`;
+
+      const req = http.request(
+        {
+          hostname: ip,
+          port,
+          path,
+          method: 'GET',
+          timeout: 5000,
+          headers,
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', () => {
+            try {
+              const data = JSON.parse(body || '{}');
+              resolve(data.success === true);
+            } catch {
+              resolve(res.statusCode === 200);
             }
           });
         },

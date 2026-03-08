@@ -73,6 +73,8 @@ func main() {
 
 	// ── Load client config (client_config.json) ──
 	initClientConfig()
+	// ── Load actions (actions.json) ──
+	initActionsConfig()
 
 	// ── Load saved preferences ──
 	if flagPluginURL == "" {
@@ -119,7 +121,7 @@ func main() {
 
 	// ── Build GUI ──
 	mainWindow = fyneApp.NewWindow("Computer Control")
-	mainWindow.Resize(fyne.NewSize(520, 560))
+	mainWindow.Resize(fyne.NewSize(620, 720))
 	mainWindow.CenterOnScreen()
 
 	content := buildMainUI()

@@ -7,15 +7,39 @@
 [![GitHub forks](https://img.shields.io/github/forks/orkank/homebridge-computer-control.svg)](https://github.com/orkank/homebridge-computer-control/network)
 
 <p align="center">
-  <img src="img1.png" alt="Home app" width="400">
-  <img src="img2.png" alt="Client app" width="400">
+  <img src="homekit1.png" alt="Home app" width="400">
+  <img src="homekit2.png" alt="Client app" width="400">
+</p>
+
+<p align="center">
+  <img src="client1.png" alt="Home app" width="400">
+  <img src="client2.png" alt="Client app" width="400">
+  <img src="client3.png" alt="Client app" width="400">
 </p>
 
 > ⚠️ **Test version** — This plugin is still in testing.
 
 Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homebridge. Wake them with WoL, put them to sleep remotely, and manage them as HomeKit switches.
 
-**Version:** 1.1.1
+**Version:** 1.1.4
+
+### 🎯 Custom Actions — One-Tap HomeKit Accessories
+
+Define actions in the client **Actions** tab; they appear instantly as switches or buttons in HomeKit. No manual config — every action you add shows up automatically in the Home app.
+
+| Platform | Available Actions |
+|----------|------------------------|
+| **macOS** | **BTT** (BetterTouchTool), Shell, Batch, AppleScript, URL |
+| **Linux** | Shell, Batch, URL |
+| **Windows** | Batch, URL |
+
+**macOS + BetterTouchTool:** With BTT installed, you can bind any BTT CLI command to a HomeKit accessory with one tap. Commands like `trigger_named "mute"`, `display_notification "Hello"`, or `set_string_variable` — add them in the client Actions tab → they appear as switches/buttons in Home → trigger via Siri or automations.
+
+> **Note:** BTT's Command Line / Socket Server must be enabled in BetterTouchTool's Scripting Settings first. See [BTT CLI documentation](https://docs.folivora.ai/docs/scripting/cli) for details.
+
+**Trigger by UUID:** You can also trigger any BTT trigger by its UUID: `execute_assigned_actions_for_trigger 823A845F-8D62-4950-8709-1CE5527CEADF`. Find the UUID in BTT (right-click trigger → Copy UUID) and add it as an action — no need to use the trigger name.
+
+**Example uses:** Mute/unmute, show notifications, set variables, open URLs, run scripts, trigger shortcuts. Choose Toggle (remembers state) or Push Button (one-shot).
 
 ## Features
 
@@ -31,6 +55,7 @@ Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homeb
 | **Config UI** | View clients, remove stale ones, configure group name |
 | **Anti-Sleep** | Virtual switch to prevent all computers from sleeping (configurable name + optional timer) |
 | **Temperature Sensor** | Optional CPU temperature in HomeKit (client checkbox "Send Temperature Data"); Linux thermal/sensors, macOS ioreg, Windows WMI |
+| **Custom Actions** | Define BTT, shell, batch, AppleScript, or URL actions in the client; they appear as switches or buttons in HomeKit |
 
 ## Architecture
 
@@ -41,10 +66,10 @@ Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homeb
                              │
 ┌────────────────────────────▼─────────────────────────────┐
 │                   Homebridge Plugin                      │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────┐ │
-│  │ Registration│  │ Wake-on-LAN  │  │  Status Check   │ │
-│  │   Server    │  │   (Power On) │  │  (HTTP)         │ │
-│  └─────────────┘  └──────────────┘  └─────────────────┘ │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────┐  │
+│  │ Registration│  │ Wake-on-LAN  │  │  Status Check   │  │
+│  │   Server    │  │   (Power On) │  │  (HTTP)         │  │
+│  └─────────────┘  └──────────────┘  └─────────────────┘  │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │        📥 Binary Download Server (:9090)             ││
 │  └──────────────────────────────────────────────────────┘│
@@ -82,6 +107,11 @@ homebridge-computer-control/
 ├── client/                   ← Go client source
 │   ├── main.go               ← Client binary source
 │   └── go.mod                ← Go module
+│
+├── examples/                 ← Example scripts for actions
+│   ├── example.sh            ← Shell (macOS/Linux)
+│   ├── example.bat           ← Batch (Windows)
+│   └── example.applescript   ← AppleScript (macOS)
 │
 ├── bin/                      ← Pre-compiled client binaries (generated)
 │   ├── ComputerControl.app/  ← macOS hidden agent bundle
@@ -187,7 +217,24 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ## Changelog
 
-### 1.1.1 (Current)
+### 1.1.4 (Current)
+
+- **Custom Actions**: Define actions in the client (BTT, shell, batch, AppleScript, URL) — they appear as HomeKit switches or tap buttons
+  - Client Actions tab: add/delete actions; `actions.json` storage; heartbeat includes actions
+  - Toggle (remembers state) or Push Button (one-shot); `{status}` substitution for on/off
+  - BTT: full path to bttcli; args passed correctly (no shell wrapping)
+  - AppleScript: file path (`.applescript`/`.scpt`) or inline script; `~` expansion
+  - URL: HTTP request (async) or open in default browser
+- **Platform-specific actions**: macOS (all); Linux (shell, batch, url); Windows (batch, url only)
+- **Client UI**: Larger main window (620×720); Delete button blue/white; action name hint (no auto hostname prefix)
+- **Example scripts**: `examples/` folder with example.sh, example.bat, example.applescript
+- **Plugin fix**: `@homebridge/plugin-ui-utils` in dependencies + `homebridge-ui` in files — Config UI opens correctly on Node 20
+
+### 1.1.2 / 1.1.3
+
+- Plugin config did not open in Homebridge Config UI X (broken fix for Node 20 compatibility)
+
+### 1.1.1
 
 - **macOS Dark Mode**: Hide/Quit buttons use light text on dark window frame; sidebar, separators, and sidebar items follow system light/dark theme
 - **Temperature Sensor**: Optional CPU temperature in HomeKit
@@ -237,6 +284,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 | **Windows Hidden** | Built with `-H windowsgui` — no console window |
 | **Version** | `--version` flag prints version; GUI shows version in header, info form, and About |
 | **Temperature** | Optional "Send Temperature Data" checkbox; persisted in `client_config.json`; only reads CPU temp when enabled (minimizes CPU load) |
+| **Actions** | Define custom actions (BTT, shell, batch, AppleScript, URL) in Actions tab; stored in `actions.json`; appear as HomeKit switches/buttons |
 
 ### Temperature Sensor (Optional)
 
@@ -285,6 +333,7 @@ All client endpoints require `X-Auth-Token` header (issued by plugin on registra
 | `POST` | `/sleep` | Put computer to sleep |
 | `POST` | `/wake-screen` | Force display wake (macOS: caffeinate + key + brightness) |
 | `GET` | `/stay-awake?enabled=true\|false` | Enable/disable system sleep prevention (Anti-Sleep) |
+| `GET` | `/run-action?name=X&state=on\|off` | Execute a named action (BTT, shell, batch, AppleScript, URL) |
 
 ## Publishing (Maintainers)
 

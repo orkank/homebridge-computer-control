@@ -187,7 +187,35 @@
       }
     }
 
+    const DEFAULTS = {
+      name: 'Computer Control',
+      registrationPort: 9090,
+      groupAccessoryName: 'Computers',
+      antiSleepDeviceName: 'Computer Sleep Prevention',
+      antiSleepTimer: 0,
+      clients: []
+    };
+
+    async function ensureDefaults() {
+      try {
+        const config = await homebridge.getPluginConfig();
+        const idx = (config || []).findIndex(p => p.platform === 'ComputerControl');
+        if (idx < 0) return;
+        const p = config[idx];
+        const isMinimal = p.registrationPort === undefined && p.groupAccessoryName === undefined && p.antiSleepDeviceName === undefined;
+        const needsDefaults = isMinimal || p.name === 'ComputerControl';
+        if (needsDefaults) {
+          const merged = { ...DEFAULTS, ...p, name: p.name === 'ComputerControl' ? DEFAULTS.name : (p.name || DEFAULTS.name) };
+          config[idx] = merged;
+          await homebridge.savePluginConfig(config);
+        }
+      } catch (e) {
+        console.warn('ensureDefaults:', e);
+      }
+    }
+
     try {
+      await ensureDefaults();
       await loadClients();
     } catch (e) {
       container.innerHTML = `<div class="alert alert-danger mb-0">Error: ${e.message}</div>`;
