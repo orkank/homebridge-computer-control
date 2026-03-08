@@ -101,14 +101,16 @@ func buildMainUI() fyne.CanvasObject {
 
 	dashboardContent := buildDashboardContent()
 	actionsContent := buildActionsContent()
+	managedAppsContent := buildManagedAppsContent()
 	settingsContent := buildSettingsContent()
 	logsContent := buildLogsContent()
 
 	// ── Sidebar items ──
-	var dashItem, actItem, settItem, logItem *sidebarItem
+	var dashItem, actItem, managedItem, settItem, logItem *sidebarItem
 	selectItem := func(which *sidebarItem) {
 		dashItem.SetSelected(which == dashItem)
 		actItem.SetSelected(which == actItem)
+		managedItem.SetSelected(which == managedItem)
 		settItem.SetSelected(which == settItem)
 		logItem.SetSelected(which == logItem)
 	}
@@ -121,6 +123,11 @@ func buildMainUI() fyne.CanvasObject {
 	actItem = newSidebarItem("Actions", theme.ContentAddIcon(), func() {
 		selectItem(actItem)
 		contentArea.Objects = []fyne.CanvasObject{actionsContent}
+		contentArea.Refresh()
+	})
+	managedItem = newSidebarItem("Managed Apps", theme.ComputerIcon(), func() {
+		selectItem(managedItem)
+		contentArea.Objects = []fyne.CanvasObject{managedAppsContent}
 		contentArea.Refresh()
 	})
 	settItem = newSidebarItem("Settings", theme.SettingsIcon(), func() {
@@ -142,6 +149,7 @@ func buildMainUI() fyne.CanvasObject {
 		layout.NewSpacer(),
 		dashItem,
 		actItem,
+		managedItem,
 		settItem,
 		logItem,
 		layout.NewSpacer(),
@@ -149,7 +157,7 @@ func buildMainUI() fyne.CanvasObject {
 
 	// Sidebar background (theme-aware: light/dark)
 	sidebarBg := newThemeAwareRect(macLightSidebar, macDarkSidebar)
-	themeDependentWidgets = append(themeDependentWidgets, sidebarBg, dashItem, actItem, settItem, logItem)
+	themeDependentWidgets = append(themeDependentWidgets, sidebarBg, dashItem, actItem, managedItem, settItem, logItem)
 	sidebarContainer := container.NewStack(sidebarBg, container.NewPadded(sidebarList))
 
 	// Vertical separator (theme-aware)
@@ -410,7 +418,7 @@ func buildActionsContent() fyne.CanvasObject {
 
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder("HomeKit display name")
-	nameHint := widget.NewRichTextWithText("Karışıklık olmasın diye bizce \"Bilgisayar Adı - Aksiyon Adı\" formatında yazmanızı öneririz.")
+	nameHint := widget.NewRichTextWithText("To avoid confusion, we recommend using the format \"Computer Name - Action Name\".")
 	nameHint.Wrapping = fyne.TextWrapWord
 	nameHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
 	nameHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
@@ -569,6 +577,171 @@ func buildActionsContent() fyne.CanvasObject {
 		actionsList,
 		layout.NewSpacer(),
 		layout.NewSpacer(), // extra bottom padding
+	)
+	return container.NewScroll(container.NewPadded(content))
+}
+
+// ──────────────────────────────────────────────
+// Managed Apps
+// ──────────────────────────────────────────────
+
+func buildManagedAppsContent() fyne.CanvasObject {
+	title := widget.NewRichTextWithText("Managed Apps")
+	title.Segments[0].(*widget.TextSegment).Style.TextStyle = fyne.TextStyle{Bold: true}
+
+	desc := widget.NewRichTextWithText("Monitor and control app state in HomeKit. ON = app running, OFF = app not running. Add apps to create switches in Home.")
+	desc.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+	desc.Wrapping = fyne.TextWrapWord
+
+	managedAppsList := container.NewVBox()
+	var refreshList func()
+	refreshList = func() {
+		managedAppsList.Objects = nil
+		for _, app := range getManagedApps() {
+			aa := app
+			delBtn := widget.NewButton("Delete", func() {
+				apps := getManagedApps()
+				var out []ManagedAppEntry
+				for _, x := range apps {
+					if !strings.EqualFold(x.Name, aa.Name) {
+						out = append(out, x)
+					}
+				}
+				setManagedApps(out)
+				refreshList()
+			})
+			delBtn.Importance = widget.HighImportance
+			badges := ""
+			if aa.WakeBefore {
+				badges += " [Wake]"
+			}
+			if aa.SleepAfter {
+				badges += " [Sleep]"
+			}
+			row := container.NewHBox(
+				widget.NewLabel(app.Name+badges),
+				layout.NewSpacer(),
+				delBtn,
+			)
+			managedAppsList.Add(row)
+		}
+		managedAppsList.Refresh()
+	}
+	refreshList()
+
+	addBtn := widget.NewButton("Add", func() {
+		// Get running process names when dialog opens (instant refresh)
+		allOptions := GetRunningProcessNames()
+		filtered := make([]string, len(allOptions))
+		copy(filtered, allOptions)
+
+		processEntry := widget.NewEntry()
+		processEntry.SetPlaceHolder("Type to search or select from list below")
+
+		processList := widget.NewList(
+			func() int { return len(filtered) },
+			func() fyne.CanvasObject { return widget.NewLabel("") },
+			func(id widget.ListItemID, o fyne.CanvasObject) {
+				o.(*widget.Label).SetText(filtered[id])
+			},
+		)
+		processList.OnSelected = func(id widget.ListItemID) {
+			if id >= 0 && id < len(filtered) {
+				processEntry.SetText(filtered[id])
+			}
+		}
+
+		updateFilter := func() {
+			q := strings.TrimSpace(strings.ToLower(processEntry.Text))
+			filtered = filtered[:0]
+			for _, s := range allOptions {
+				if q == "" || strings.Contains(strings.ToLower(s), q) {
+					filtered = append(filtered, s)
+				}
+			}
+			processList.Refresh()
+		}
+		processEntry.OnChanged = func(_ string) { updateFilter() }
+		updateFilter()
+
+		listScroll := container.NewScroll(processList)
+		listScroll.SetMinSize(fyne.NewSize(360, 180))
+		wakeBeforeRadio := widget.NewRadioGroup([]string{"Yes", "No"}, nil)
+		wakeBeforeRadio.SetSelected("No")
+		wakeBeforeHint := widget.NewRichTextWithText("Same as standard wake: WoL → 5s delay → wake-screen (display on) → launch app.")
+		wakeBeforeHint.Wrapping = fyne.TextWrapWord
+		wakeBeforeHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+		wakeBeforeHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
+		sleepAfterRadio := widget.NewRadioGroup([]string{"Yes", "No"}, nil)
+		sleepAfterRadio.SetSelected("No")
+		sleepAfterHint := widget.NewRichTextWithText("5s after app is quit, client runs OS sleep (pmset/rundll32/systemctl).")
+		sleepAfterHint.Wrapping = fyne.TextWrapWord
+		sleepAfterHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+		sleepAfterHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
+		modalContent := container.NewVBox(
+			widget.NewLabel("Process name (type to search, click to select):"),
+			processEntry,
+			widget.NewLabel("Running processes:"),
+			listScroll,
+			widget.NewLabel("Wake Computer Before Launch"),
+			wakeBeforeRadio,
+			wakeBeforeHint,
+			widget.NewLabel("Sleep Device After Quit"),
+			sleepAfterRadio,
+			sleepAfterHint,
+		)
+		modalContent.Resize(fyne.NewSize(420, 480))
+
+		dlg := dialog.NewCustomConfirm("Add Managed App", "Add", "Cancel", modalContent, func(ok bool) {
+			if !ok {
+				return
+			}
+			name := strings.TrimSpace(processEntry.Text)
+			if name == "" {
+				dialog.ShowError(fmt.Errorf("App name is required"), mainWindow)
+				return
+			}
+			apps := getManagedApps()
+			for _, x := range apps {
+				if strings.EqualFold(x.Name, name) {
+					dialog.ShowError(fmt.Errorf("App %q is already managed", name), mainWindow)
+					return
+				}
+			}
+			entry := ManagedAppEntry{
+				Name:       name,
+				WakeBefore: wakeBeforeRadio.Selected == "Yes",
+				SleepAfter: sleepAfterRadio.Selected == "Yes",
+			}
+			setManagedApps(append(apps, entry))
+			refreshList()
+		}, mainWindow)
+		dlg.Resize(fyne.NewSize(460, 520))
+		dlg.Show()
+		// Focus entry when dialog opens so user can type immediately
+		go func() {
+			time.Sleep(80 * time.Millisecond)
+			if c := mainWindow.Canvas(); c != nil {
+				c.Focus(processEntry)
+			}
+		}()
+	})
+	addBtn.Importance = widget.HighImportance
+
+	sepLight := color.NRGBA{R: 0xd1, G: 0xd1, B: 0xd6, A: 0x40}
+	sepDark := color.NRGBA{R: 0x48, G: 0x48, B: 0x4a, A: 0x40}
+	sep := newThemeAwareRect(sepLight, sepDark)
+	sep.SetMinSize(fyne.NewSize(1, 0.5))
+	themeDependentWidgets = append(themeDependentWidgets, sep)
+
+	content := container.NewVBox(
+		title,
+		desc,
+		addBtn,
+		sep,
+		widget.NewRichTextWithText("Current Managed Apps"),
+		managedAppsList,
+		layout.NewSpacer(),
 	)
 	return container.NewScroll(container.NewPadded(content))
 }

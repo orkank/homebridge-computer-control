@@ -75,6 +75,8 @@ func main() {
 	initClientConfig()
 	// ── Load actions (actions.json) ──
 	initActionsConfig()
+	// ── Load managed apps (managed_apps.json) ──
+	initManagedAppsConfig()
 
 	// ── Load saved preferences ──
 	if flagPluginURL == "" {

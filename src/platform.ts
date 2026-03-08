@@ -25,9 +25,18 @@ import {
   SLEEP_DEBOUNCE_SECONDS,
   RegisteredClient,
   ClientAction,
+  ClientManagedApp,
 } from './settings';
 
-import { ComputerAccessory, GroupComputerAccessory, AntiSleepAccessory, ActionAccessory, GROUP_ACCESSORY_UUID, ANTI_SLEEP_ACCESSORY_UUID } from './platformAccessory';
+import {
+  ComputerAccessory,
+  GroupComputerAccessory,
+  AntiSleepAccessory,
+  ActionAccessory,
+  ManagedAppAccessory,
+  GROUP_ACCESSORY_UUID,
+  ANTI_SLEEP_ACCESSORY_UUID,
+} from './platformAccessory';
 
 /**
  * Maps URL path segments to actual binary file names in the /bin directory.
@@ -119,6 +128,7 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   // Managed accessory handlers
   private readonly computerAccessories: Map<string, ComputerAccessory> = new Map();
   private readonly actionAccessories: Map<string, ActionAccessory> = new Map(); // key: mac:actionName
+  private readonly managedAppAccessories: Map<string, ManagedAppAccessory> = new Map(); // key: mac:appName
   private groupAccessory: GroupComputerAccessory | null = null;
   private antiSleepAccessory: AntiSleepAccessory | null = null;
 
@@ -338,6 +348,9 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           ? (data as { actions?: ClientAction[] }).actions!
           : [];
 
+        const appStates = (data as { appStates?: Record<string, boolean> }).appStates;
+        const managedApps = (data as { managedApps?: ClientManagedApp[] }).managedApps;
+
         const client: RegisteredClient = {
           hostname: data.hostname || 'Unknown',
           ip: data.ip,
@@ -350,6 +363,8 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           token,
           temperature,
           actions,
+          appStates,
+          managedApps,
         };
 
         this.clients.set(macKey, client);
@@ -360,6 +375,9 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
         // Add/update/remove action accessories for this client
         this.addOrUpdateActionAccessories(macKey, client);
+
+        // Add/update/remove managed app accessories for this client
+        this.addOrUpdateManagedAppAccessories(macKey, client);
 
         this.log.info(
           `💓 Registration from ${client.hostname} (${client.ip} / ${client.mac})${isDarkWake ? ' [Dark Wake — kept OFF]' : ''}`,
@@ -565,6 +583,8 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
     for (const [macKey, client] of this.clients) {
       this.addOrUpdateAccessory(macKey, client);
+      this.addOrUpdateActionAccessories(macKey, client);
+      this.addOrUpdateManagedAppAccessories(macKey, client);
     }
 
     // Add or update the virtual group accessory (Wake All / Sleep All)
@@ -580,9 +600,14 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       ),
     );
     const actionUUIDs = new Set<string>();
+    const managedAppUUIDs = new Set<string>();
     for (const [macKey, client] of this.clients) {
       for (const a of client.actions || []) {
         actionUUIDs.add(this.api.hap.uuid.generate(`action-${macKey}-${a.name}`));
+      }
+      const appNames = client.appStates ? Object.keys(client.appStates) : [];
+      for (const appName of appNames) {
+        managedAppUUIDs.add(this.api.hap.uuid.generate(`managed-app-${macKey}-${appName}`));
       }
     }
     const groupUUID = this.api.hap.uuid.generate(GROUP_ACCESSORY_UUID);
@@ -593,7 +618,8 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
         acc.UUID !== groupUUID &&
         acc.UUID !== antiSleepUUID &&
         !clientUUIDs.has(acc.UUID) &&
-        !actionUUIDs.has(acc.UUID),
+        !actionUUIDs.has(acc.UUID) &&
+        !managedAppUUIDs.has(acc.UUID),
     );
 
     if (accessoriesToRemove.length > 0) {
@@ -744,6 +770,9 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
     // Remove action accessories for this client
     this.removeActionAccessoriesForClient(macKey);
+
+    // Remove managed app accessories for this client
+    this.removeManagedAppAccessoriesForClient(macKey);
   }
 
   /**
@@ -816,6 +845,80 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           this.log.info(`🗑️  Removed action accessory: ${handler.accessory.displayName}`);
         }
         this.actionAccessories.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Add or update managed app accessories for a client. Removes apps no longer in appStates.
+   */
+  private addOrUpdateManagedAppAccessories(macKey: string, client: RegisteredClient): void {
+    const appStates = client.appStates || {};
+    const currentKeys = new Set(Object.keys(appStates).map((name) => `${macKey}:${name}`));
+
+    // Remove managed app accessories that are no longer in appStates
+    const keysToRemove = Array.from(this.managedAppAccessories.keys()).filter(
+      (key) => key.startsWith(macKey + ':') && !currentKeys.has(key),
+    );
+    for (const key of keysToRemove) {
+      const handler = this.managedAppAccessories.get(key);
+      if (handler) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [handler.accessory]);
+        const idx = this.accessories.indexOf(handler.accessory);
+        if (idx >= 0) this.accessories.splice(idx, 1);
+      }
+      this.managedAppAccessories.delete(key);
+    }
+
+    for (const [appName] of Object.entries(appStates)) {
+      if (!appName) continue;
+      const key = `${macKey}:${appName}`;
+      const uuid = this.api.hap.uuid.generate(`managed-app-${macKey}-${appName}`);
+      const displayName = appName;
+      const existing = this.accessories.find((acc) => acc.UUID === uuid);
+
+      if (existing) {
+        existing.updateDisplayName(displayName);
+        const infoService = existing.getService(this.Service.AccessoryInformation);
+        if (infoService) {
+          infoService.updateCharacteristic(this.Characteristic.Name, displayName);
+        }
+        this.api.updatePlatformAccessories([existing]);
+
+        if (this.managedAppAccessories.has(key)) {
+          this.managedAppAccessories.get(key)!.updateClient(client);
+        } else {
+          this.managedAppAccessories.set(key, new ManagedAppAccessory(this, existing, client, appName));
+        }
+      } else {
+        const accessory = new this.api.platformAccessory(displayName, uuid);
+        accessory.context.isManagedApp = true;
+        accessory.context.client = client;
+        accessory.context.appName = appName;
+
+        const handler = new ManagedAppAccessory(this, accessory, client, appName);
+        this.managedAppAccessories.set(key, handler);
+
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.push(accessory);
+        this.log.info(`➕ Added managed app accessory: ${displayName}`);
+      }
+    }
+  }
+
+  /**
+   * Remove all managed app accessories for a client (when client is removed).
+   */
+  private removeManagedAppAccessoriesForClient(macKey: string): void {
+    for (const key of this.managedAppAccessories.keys()) {
+      if (key.startsWith(macKey + ':')) {
+        const handler = this.managedAppAccessories.get(key);
+        if (handler) {
+          this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [handler.accessory]);
+          this.accessories.splice(this.accessories.indexOf(handler.accessory), 1);
+          this.log.info(`🗑️  Removed managed app accessory: ${handler.accessory.displayName}`);
+        }
+        this.managedAppAccessories.delete(key);
       }
     }
   }
@@ -974,6 +1077,55 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
               resolve(data.success === true);
             } catch {
               resolve(false);
+            }
+          });
+        },
+      );
+
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+
+      req.end();
+    });
+  }
+
+  /**
+   * Send manage-app request to a client. GET /manage-app?name=X&target=on|off
+   */
+  public sendManageAppRequest(
+    ip: string,
+    port: number,
+    appName: string,
+    target: 'on' | 'off',
+    token?: string,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      const headers: Record<string, string> = {};
+      if (token) headers['X-Auth-Token'] = token;
+
+      const path = `/manage-app?name=${encodeURIComponent(appName)}&target=${target}`;
+
+      const req = http.request(
+        {
+          hostname: ip,
+          port,
+          path,
+          method: 'GET',
+          timeout: 5000,
+          headers,
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', () => {
+            try {
+              const data = JSON.parse(body || '{}');
+              resolve(data.success === true);
+            } catch {
+              resolve(res.statusCode === 200);
             }
           });
         },

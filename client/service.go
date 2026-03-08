@@ -25,16 +25,18 @@ var (
 
 // RegistrationPayload is the JSON body sent to the Homebridge plugin.
 type RegistrationPayload struct {
-	Hostname    string   `json:"hostname"`
-	IP          string   `json:"ip"`
-	MAC         string   `json:"mac"`
-	Port        int      `json:"port"`
-	OS          string   `json:"os"`
-	Arch        string   `json:"arch,omitempty"`
-	Version     string   `json:"version,omitempty"`
-	IsDarkWake  bool     `json:"isDarkWake,omitempty"`
-	Temperature *int     `json:"temperature,omitempty"`
-	Actions     []Action `json:"actions,omitempty"` // Custom actions for HomeKit switches
+	Hostname    string              `json:"hostname"`
+	IP          string              `json:"ip"`
+	MAC         string              `json:"mac"`
+	Port        int                 `json:"port"`
+	OS          string              `json:"os"`
+	Arch        string              `json:"arch,omitempty"`
+	Version     string              `json:"version,omitempty"`
+	IsDarkWake  bool                `json:"isDarkWake,omitempty"`
+	Temperature *int                `json:"temperature,omitempty"`
+	Actions     []Action            `json:"actions,omitempty"`   // Custom actions for HomeKit switches
+	AppStates   map[string]bool      `json:"appStates,omitempty"` // Managed app name -> running (true/false)
+	ManagedApps []ManagedAppEntry   `json:"managedApps,omitempty"` // App config with wakeBefore/sleepAfter
 }
 
 // SleepResponse is the JSON returned by the /sleep endpoint.
@@ -103,6 +105,7 @@ func startHTTPServer(hostname string) {
 	mux.HandleFunc("/wake-screen", requireAuth(handleWakeScreen))
 	mux.HandleFunc("/stay-awake", requireAuth(handleStayAwake))
 	mux.HandleFunc("/run-action", requireAuth(handleRunAction))
+	mux.HandleFunc("/manage-app", requireAuth(handleManageApp))
 
 	addr := fmt.Sprintf(":%d", flagPort)
 	log.Printf("🚀 HTTP server listening on %s", addr)
@@ -410,16 +413,25 @@ func shouldSkipHeartbeat() bool {
 
 // sendHeartbeat sends a single registration request and returns success.
 func sendHeartbeat(hostname, ip, mac string) bool {
+	// Compute app_states from managed apps and process list
+	managedApps := getManagedApps()
+	appStates := make(map[string]bool)
+	for _, app := range managedApps {
+		appStates[app.Name] = IsProcessRunning(app.Name)
+	}
+
 	payload := RegistrationPayload{
-		Hostname:   hostname,
-		IP:         ip,
-		MAC:        mac,
-		Port:       flagPort,
-		OS:         runtime.GOOS,
-		Arch:       runtime.GOARCH,
-		Version:    clientVersion,
-		IsDarkWake: isDisplayInDarkWake(),
-		Actions:    getActions(),
+		Hostname:    hostname,
+		IP:          ip,
+		MAC:         mac,
+		Port:        flagPort,
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
+		Version:     clientVersion,
+		IsDarkWake:  isDisplayInDarkWake(),
+		Actions:     getActions(),
+		AppStates:   appStates,
+		ManagedApps: managedApps,
 	}
 	// Only read and send temperature when user enabled "Send Temperature Data" (minimizes CPU load)
 	// On failure: send null silently, no log spam

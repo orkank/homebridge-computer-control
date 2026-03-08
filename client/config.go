@@ -24,6 +24,11 @@ func init() {
 	configPath = getClientConfigPath()
 }
 
+// GetConfigDir returns the config directory (shared by actions, managed_apps, etc.).
+func GetConfigDir() string {
+	return filepath.Dir(getClientConfigPath())
+}
+
 // getClientConfigPath returns the path to client_config.json.
 // Uses OS-appropriate config directory.
 func getClientConfigPath() string {

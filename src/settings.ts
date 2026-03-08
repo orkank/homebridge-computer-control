@@ -51,6 +51,10 @@ export interface RegisteredClient {
   temperature?: number | null;
   /** Custom actions from client (HomeKit switches/buttons) */
   actions?: ClientAction[];
+  /** Managed app name -> running (true/false). Keys are the managed app names. */
+  appStates?: Record<string, boolean>;
+  /** Managed app config with wakeBefore/sleepAfter. */
+  managedApps?: ClientManagedApp[];
 }
 
 /**
@@ -62,6 +66,16 @@ export interface ClientAction {
   value: string;
   interface: string; // toggle or button
   urlMode?: string; // fetch or browser, only when type is url
+  wakeBefore?: boolean;
+  sleepAfter?: boolean;
+}
+
+/**
+ * Managed app from client (live app monitoring).
+ * App name as stored on client; state comes from appStates.
+ */
+export interface ClientManagedApp {
+  name: string;
   wakeBefore?: boolean;
   sleepAfter?: boolean;
 }

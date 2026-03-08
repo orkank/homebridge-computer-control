@@ -341,6 +341,116 @@ export class ActionAccessory {
   }
 }
 
+/**
+ * ManagedAppAccessory
+ *
+ * Switch that reflects live app state from the client.
+ * - ON  = app is running
+ * - OFF = app is not running
+ * - handleOnGet returns app_states[appName] (real state from client)
+ * - handleOnSet: when user taps, call /manage-app?name=X&target=on or off
+ * - CRITICAL: updateCharacteristic(On, value) ONLY from app_states — never from user action.
+ */
+export class ManagedAppAccessory {
+  public readonly accessory: PlatformAccessory;
+  private service: Service;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    accessory: PlatformAccessory,
+    private client: RegisteredClient,
+    private appName: string,
+  ) {
+    this.accessory = accessory;
+
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, appName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Managed App')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, `managed-app-${client.mac}-${appName}`);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Switch) ||
+      this.accessory.addService(this.platform.Service.Switch);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, appName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.handleOnGet.bind(this))
+      .onSet(this.handleOnSet.bind(this));
+
+    // Initial state from app_states
+    this.updateFromAppStates(client.appStates);
+  }
+
+  /**
+   * Update the On characteristic from app_states. ONLY source of truth for display.
+   */
+  public updateFromAppStates(appStates?: Record<string, boolean>): void {
+    const running = !!(appStates && appStates[this.appName]);
+    this.service.updateCharacteristic(this.platform.Characteristic.On, running);
+  }
+
+  private handleOnGet(): CharacteristicValue {
+    const appStates = this.client.appStates;
+    return !!(appStates && appStates[this.appName]);
+  }
+
+  private async handleOnSet(value: CharacteristicValue): Promise<void> {
+    const targetState = value as boolean;
+    const target = targetState ? 'on' : 'off';
+
+    // Wake before launch: same flow as Wake Before Action (WoL → 5s → wake-screen → manage-app)
+    const appConfig = this.client.managedApps?.find(
+      (a) => a.name.toLowerCase() === this.appName.toLowerCase(),
+    );
+    if (target === 'on' && appConfig?.wakeBefore && this.client.mac) {
+      this.platform.log.info(`⏰ Wake before launch: ${this.client.hostname}`);
+      await this.platform.sendWakeOnLan(this.client.mac);
+      await new Promise((r) => setTimeout(r, 5000));
+      const wakeScreenOk = await this.platform.sendWakeScreenRequest(
+        this.client.ip,
+        this.client.port,
+        this.client.token,
+      );
+      if (wakeScreenOk) {
+        this.platform.log.info(`✅ Wake-screen sent (display on): ${this.client.hostname}`);
+      } else {
+        this.platform.log.debug(
+          `⚠️  Wake-screen failed for ${this.client.hostname} (may be non-macOS or not yet online)`,
+        );
+      }
+    }
+
+    const ok = await this.platform.sendManageAppRequest(
+      this.client.ip,
+      this.client.port,
+      this.appName,
+      target,
+      this.client.token,
+    );
+
+    if (ok) {
+      this.platform.log.info(
+        `🔘 Managed app: ${this.appName} → ${target} (${this.client.hostname})`,
+      );
+    } else {
+      this.platform.log.warn(
+        `⚠️ Manage-app request may have failed for ${this.appName} on ${this.client.hostname}`,
+      );
+    }
+    // Do NOT update characteristic here — next heartbeat will send real app_states
+  }
+
+  public updateClient(client: RegisteredClient): void {
+    this.client = client;
+    this.accessory.context.client = client;
+    this.updateFromAppStates(client.appStates);
+  }
+}
+
 export class ComputerAccessory {
   private service: Service;
   private client: RegisteredClient;

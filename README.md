@@ -21,7 +21,21 @@
 
 Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homebridge. Wake them with WoL, put them to sleep remotely, and manage them as HomeKit switches.
 
-**Version:** 1.1.5
+**Version:** 1.1.6
+
+### 📱 Managed Apps — Live Application Monitoring (Real-State)
+
+**Managed Apps** lets you monitor and control running applications directly from HomeKit. Each app becomes a switch: **ON** = app is running, **OFF** = app is not running. Unlike fire-and-forget actions, the switch state reflects the **actual process state** from the client.
+
+| Feature | Description |
+|---------|-------------|
+| **Real-State Switch** | Switch reflects only client-reported `app_states` — never from user tap. If you turn OFF in HomeKit, the switch stays ON until the app actually quits |
+| **Add Process** | Client **Managed Apps** tab → Add → select from running processes (searchable list). macOS: clean `.app` names; Windows: includes `.exe` |
+| **Launch / Quit** | Client `/manage-app?name=X&target=on\|off` — launch app or force-kill all matching processes |
+| **Wake Before Launch** | Same as Actions: WoL → 5s delay → wake-screen → launch app |
+| **Sleep After Quit** | Same as Actions: 5 seconds after quit, client runs OS sleep (pmset/rundll32/systemctl) |
+
+Storage: `managed_apps.json` in the same config dir as `actions.json`. Each app: `{name, wakeBefore, sleepAfter}`.
 
 ### 🎯 Custom Actions — One-Tap HomeKit Accessories
 
@@ -60,6 +74,7 @@ Define actions in the client **Actions** tab; they appear instantly as switches 
 | **Anti-Sleep** | Virtual switch to prevent all computers from sleeping (configurable name + optional timer) |
 | **Temperature Sensor** | Optional CPU temperature in HomeKit (client checkbox "Send Temperature Data"); Linux thermal/sensors, macOS ioreg, Windows WMI |
 | **Custom Actions** | Define BTT, shell, batch, AppleScript, or URL actions in the client; they appear as switches or buttons in HomeKit |
+| **Managed Apps** | Live app monitoring — add process names in client; each becomes a real-state switch (ON = running, OFF = not running). Launch/quit from HomeKit; optional Wake Before Launch / Sleep After Quit |
 
 ## Architecture
 
@@ -221,7 +236,19 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ## Changelog
 
-### 1.1.5 (Current)
+### 1.1.6 (Current)
+
+- **Managed Apps — Live Application Monitoring**: New feature for real-state app control
+  - Client **Managed Apps** tab: add process names from running processes (searchable list, instant refresh)
+  - Each app becomes a HomeKit switch: ON = running, OFF = not running (state from client heartbeat only)
+  - Launch app (target=on) or force-kill (target=off) via `/manage-app` endpoint
+  - **Wake Before Launch**: Same as Actions — WoL → 5s → wake-screen → launch
+  - **Sleep After Quit**: Same as Actions — 5s after quit, client runs OS sleep
+  - Storage: `managed_apps.json` with `{name, wakeBefore, sleepAfter}` per app
+  - macOS: clean `.app` names; Windows: `.exe` in list; case-insensitive matching
+- **Add modal UX**: Managed Apps add dialog enlarged; Entry + filterable List (type to search); auto-focus on open
+
+### 1.1.5
 
 - **Wake Before Action**: Per-action option to wake the computer before running (WoL → 5s delay → wake-screen → run-action). Same flow as standard wake; display wakes from Dark Wake.
 - **Sleep After Action**: Per-action option to put the computer to sleep 5 seconds after the action triggers. macOS: `pmset sleepnow` (osascript fallback). Stored as `wakeBefore` and `sleepAfter` in `actions.json`.
@@ -295,6 +322,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 | **Version** | `--version` flag prints version; GUI shows version in header, info form, and About |
 | **Temperature** | Optional "Send Temperature Data" checkbox; persisted in `client_config.json`; only reads CPU temp when enabled (minimizes CPU load) |
 | **Actions** | Define custom actions (BTT, shell, batch, AppleScript, URL) in Actions tab; stored in `actions.json`; appear as HomeKit switches/buttons |
+| **Managed Apps** | Add process names in Managed Apps tab; stored in `managed_apps.json`; heartbeat sends `app_states` (name → running); each app becomes a real-state switch in HomeKit |
 
 ### Temperature Sensor (Optional)
 
@@ -305,6 +333,17 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 | **Windows** | WMI `Win32_PerfFormattedData_Counters_ThermalZoneInformation` (HighPrecisionTemperature) |
 
 Value sent in millidegree Celsius; plugin converts to °C (÷1000). When checkbox is off, no temperature is sent and the TemperatureSensor service is removed from the accessory.
+
+### Managed Apps (Live App Monitoring)
+
+| Aspect | Details |
+|--------|---------|
+| **Process detection** | Client uses `ps` (macOS/Linux) or `tasklist` (Windows) to list running user apps |
+| **Naming** | macOS: clean names (e.g. `Safari`, `AnyDesk`); Windows: includes `.exe` (e.g. `AnyDesk.exe`) |
+| **Matching** | Case-insensitive; Windows `.exe` handled automatically |
+| **Heartbeat** | Before each heartbeat, client checks `IsProcessRunning()` for each managed app; sends `app_states: {AppName: true/false}` |
+| **Launch** | macOS: `open -a "AppName"`; Windows: `start "" "AppName"`; Linux: `exec` |
+| **Quit** | Force-kill all processes matching the name (gopsutil) |
 
 ### macOS Sleep / Power Nap Mitigation
 
@@ -344,6 +383,7 @@ All client endpoints require `X-Auth-Token` header (issued by plugin on registra
 | `POST` | `/wake-screen` | Force display wake (macOS: caffeinate + key + brightness) |
 | `GET` | `/stay-awake?enabled=true\|false` | Enable/disable system sleep prevention (Anti-Sleep) |
 | `GET` | `/run-action?name=X&state=on\|off` | Execute a named action (BTT, shell, batch, AppleScript, URL) |
+| `GET` | `/manage-app?name=X&target=on\|off` | Launch app (target=on) or kill all processes matching name (target=off) |
 
 ## Publishing (Maintainers)
 
