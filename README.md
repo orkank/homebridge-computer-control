@@ -15,6 +15,7 @@
   <img src="client1.png" alt="Home app" width="400">
   <img src="client2.png" alt="Client app" width="400">
   <img src="client3.png" alt="Client app" width="400">
+  <img src="client4.png" alt="Client app" width="400">
 </p>
 
 > ⚠️ **Test version** — This plugin is still in testing.
