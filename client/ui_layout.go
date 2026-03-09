@@ -612,6 +612,14 @@ func buildManagedAppsContent() fyne.CanvasObject {
 			})
 			delBtn.Importance = widget.HighImportance
 			badges := ""
+			switch aa.QuitMode {
+			case QuitModeQuit:
+				badges += " [Graceful]"
+			case QuitModeQuitKill:
+				badges += " [Smart]"
+			default:
+				badges += " [Force]"
+			}
 			if aa.WakeBefore {
 				badges += " [Wake]"
 			}
@@ -678,11 +686,24 @@ func buildManagedAppsContent() fyne.CanvasObject {
 		sleepAfterHint.Wrapping = fyne.TextWrapWord
 		sleepAfterHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
 		sleepAfterHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
+		quitModeSelect := widget.NewSelect([]string{
+			"Standard Quit (Graceful)",
+			"Force Quit (Immediate)",
+			"Smart Quit (Wait then Kill)",
+		}, nil)
+		quitModeSelect.SetSelected("Standard Quit (Graceful)")
+		quitModeHint := widget.NewRichTextWithText("Standard Quit: graceful (osascript/SIGTERM). Force Quit: immediate terminate. Smart Quit: try graceful, wait 4s, then force if still running.")
+		quitModeHint.Wrapping = fyne.TextWrapWord
+		quitModeHint.Segments[0].(*widget.TextSegment).Style.ColorName = theme.ColorNameDisabled
+		quitModeHint.Segments[0].(*widget.TextSegment).Style.SizeName = theme.SizeNameCaptionText
 		modalContent := container.NewVBox(
 			widget.NewLabel("Process name (type to search, click to select):"),
 			processEntry,
 			widget.NewLabel("Running processes:"),
 			listScroll,
+			widget.NewLabel("When turning OFF:"),
+			quitModeSelect,
+			quitModeHint,
 			widget.NewLabel("Wake Computer Before Launch"),
 			wakeBeforeRadio,
 			wakeBeforeHint,
@@ -690,7 +711,7 @@ func buildManagedAppsContent() fyne.CanvasObject {
 			sleepAfterRadio,
 			sleepAfterHint,
 		)
-		modalContent.Resize(fyne.NewSize(420, 480))
+		modalContent.Resize(fyne.NewSize(420, 540))
 
 		dlg := dialog.NewCustomConfirm("Add Managed App", "Add", "Cancel", modalContent, func(ok bool) {
 			if !ok {
@@ -708,15 +729,26 @@ func buildManagedAppsContent() fyne.CanvasObject {
 					return
 				}
 			}
+			quitMode := QuitModeKill
+			switch quitModeSelect.Selected {
+			case "Standard Quit (Graceful)":
+				quitMode = QuitModeQuit
+			case "Smart Quit (Wait then Kill)":
+				quitMode = QuitModeQuitKill
+			case "Force Quit (Immediate)":
+			default:
+				quitMode = QuitModeKill
+			}
 			entry := ManagedAppEntry{
 				Name:       name,
 				WakeBefore: wakeBeforeRadio.Selected == "Yes",
 				SleepAfter: sleepAfterRadio.Selected == "Yes",
+				QuitMode:   quitMode,
 			}
 			setManagedApps(append(apps, entry))
 			refreshList()
 		}, mainWindow)
-		dlg.Resize(fyne.NewSize(460, 520))
+		dlg.Resize(fyne.NewSize(460, 580))
 		dlg.Show()
 		// Focus entry when dialog opens so user can type immediately
 		go func() {
@@ -759,6 +791,43 @@ func buildSettingsContent() fyne.CanvasObject {
 	})
 	sendTempCheck.Checked = getSendTemperature()
 
+	screensaverCheck := widget.NewCheck("Enable Remote Screensaver", func(checked bool) {
+		setEnableRemoteScreensaver(checked)
+	})
+	screensaverCheck.Checked = getEnableRemoteScreensaver()
+
+	lockCheck := widget.NewCheck("Enable Remote Lock", func(checked bool) {
+		setEnableRemoteLock(checked)
+	})
+	lockCheck.Checked = getEnableRemoteLock()
+
+	var joinMasterCheck *widget.Check
+	volumeSliderCheck := widget.NewCheck("Enable Volume Slider", func(checked bool) {
+		setEnableVolumeSlider(checked)
+		if checked && joinMasterCheck != nil {
+			joinMasterCheck.Checked = false
+			joinMasterCheck.Refresh()
+		}
+	})
+	volumeSliderCheck.Checked = getEnableVolumeSlider()
+
+	joinMasterCheck = widget.NewCheck("Join Master Volume", func(checked bool) {
+		setJoinMasterVolume(checked)
+		if checked {
+			volumeSliderCheck.Checked = false
+			volumeSliderCheck.Refresh()
+		}
+	})
+	joinMasterCheck.Checked = getJoinMasterVolume()
+
+	volumeNameEntry := widget.NewEntry()
+	volumeNameEntry.SetPlaceHolder("e.g. MacBook - Volume (default)")
+	volumeNameEntry.SetText(getVolumeSliderName())
+	volumeNameEntry.OnChanged = func(s string) {
+		setVolumeSliderName(strings.TrimSpace(s))
+	}
+	volumeNameRow := container.NewBorder(nil, nil, widget.NewLabel("Volume Slider Name:"), nil, volumeNameEntry)
+
 	autoStartCheck := widget.NewCheck("Run at Startup (Auto-Start)", func(checked bool) {
 		var asErr error
 		if checked {
@@ -777,6 +846,11 @@ func buildSettingsContent() fyne.CanvasObject {
 		layout.NewSpacer(),
 		container.NewPadded(container.NewVBox(
 			sendTempCheck,
+			screensaverCheck,
+			lockCheck,
+			volumeSliderCheck,
+			joinMasterCheck,
+			volumeNameRow,
 			autoStartCheck,
 		)),
 		layout.NewSpacer(),

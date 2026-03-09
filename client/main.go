@@ -169,6 +169,7 @@ func main() {
 	// ── Start background services ──
 	go startHTTPServer(hostname)
 	go heartbeatLoop()
+	go volumeSyncLoop() // When Join Master Volume: poll volume, notify plugin on change
 	runAutoDisplayWake() // macOS: caffeinate on startup to force display wake after boot/wake
 
 	// ── Show and run ──

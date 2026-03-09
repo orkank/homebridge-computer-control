@@ -55,6 +55,18 @@ export interface RegisteredClient {
   appStates?: Record<string, boolean>;
   /** Managed app config with wakeBefore/sleepAfter. */
   managedApps?: ClientManagedApp[];
+  /** Client has Enable Remote Screensaver checked. */
+  screensaverEnabled?: boolean;
+  /** Client has Enable Remote Lock checked. */
+  lockEnabled?: boolean;
+  /** Client has Enable Volume Slider checked. */
+  enableVolumeSlider?: boolean;
+  /** Client has Join Master Volume checked. */
+  joinMasterVolume?: boolean;
+  /** Custom name for this device's volume slider (default: [Hostname] - Volume). */
+  volumeSliderName?: string;
+  /** Current volume level 0-100 from heartbeat (for status sync). */
+  volume?: number | null;
 }
 
 /**
@@ -91,4 +103,8 @@ export interface ComputerControlConfig {
   antiSleepDeviceName?: string;
   antiSleepTimer?: number;
   clients?: RegisteredClient[];
+  /** Enable Global Volume accessory (Master Slider). When on, all clients with Join Master Volume get same level. */
+  enableGlobalVolumeSwitch?: boolean;
+  /** Display name for the Global Volume accessory (default: Computer Volume). */
+  masterVolumeName?: string;
 }

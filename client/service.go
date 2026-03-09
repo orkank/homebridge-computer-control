@@ -25,18 +25,24 @@ var (
 
 // RegistrationPayload is the JSON body sent to the Homebridge plugin.
 type RegistrationPayload struct {
-	Hostname    string              `json:"hostname"`
-	IP          string              `json:"ip"`
-	MAC         string              `json:"mac"`
-	Port        int                 `json:"port"`
-	OS          string              `json:"os"`
-	Arch        string              `json:"arch,omitempty"`
-	Version     string              `json:"version,omitempty"`
-	IsDarkWake  bool                `json:"isDarkWake,omitempty"`
-	Temperature *int                `json:"temperature,omitempty"`
-	Actions     []Action            `json:"actions,omitempty"`   // Custom actions for HomeKit switches
-	AppStates   map[string]bool      `json:"appStates,omitempty"` // Managed app name -> running (true/false)
-	ManagedApps []ManagedAppEntry   `json:"managedApps,omitempty"` // App config with wakeBefore/sleepAfter
+	Hostname             string            `json:"hostname"`
+	IP                   string            `json:"ip"`
+	MAC                  string            `json:"mac"`
+	Port                 int               `json:"port"`
+	OS                   string            `json:"os"`
+	Arch                 string            `json:"arch,omitempty"`
+	Version              string            `json:"version,omitempty"`
+	IsDarkWake           bool              `json:"isDarkWake,omitempty"`
+	Temperature          *int              `json:"temperature,omitempty"`
+	Actions              []Action          `json:"actions,omitempty"`
+	AppStates            map[string]bool    `json:"appStates,omitempty"`
+		ManagedApps          []ManagedAppEntry `json:"managedApps,omitempty"`
+		ScreensaverEnabled   bool              `json:"screensaverEnabled,omitempty"`
+		LockEnabled          bool              `json:"lockEnabled,omitempty"`
+		EnableVolumeSlider   bool              `json:"enableVolumeSlider,omitempty"`
+		JoinMasterVolume     bool              `json:"joinMasterVolume,omitempty"`
+		VolumeSliderName     string            `json:"volumeSliderName,omitempty"`
+		Volume               *int              `json:"volume,omitempty"`
 }
 
 // SleepResponse is the JSON returned by the /sleep endpoint.
@@ -106,6 +112,9 @@ func startHTTPServer(hostname string) {
 	mux.HandleFunc("/stay-awake", requireAuth(handleStayAwake))
 	mux.HandleFunc("/run-action", requireAuth(handleRunAction))
 	mux.HandleFunc("/manage-app", requireAuth(handleManageApp))
+	mux.HandleFunc("/screensaver", requireAuth(handleScreensaver))
+	mux.HandleFunc("/lock", requireAuth(handleLock))
+	mux.HandleFunc("/volume", requireAuth(handleVolume))
 
 	addr := fmt.Sprintf(":%d", flagPort)
 	log.Printf("🚀 HTTP server listening on %s", addr)
@@ -411,6 +420,86 @@ func shouldSkipHeartbeat() bool {
 	return isDisplayInDarkWake()
 }
 
+// volumeSyncLoop polls volume when volume slider is enabled; notifies plugin on change.
+func volumeSyncLoop() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if (!getJoinMasterVolume() && !getEnableVolumeSlider()) || flagPluginURL == "" {
+			continue
+		}
+		if shouldSkipHeartbeat() {
+			continue
+		}
+
+		v := GetVolumeLevel()
+		if v < 0 {
+			continue
+		}
+
+		lastSentVolumeMu.RLock()
+		last := lastSentVolume
+		lastSentVolumeMu.RUnlock()
+
+		if v == last {
+			continue
+		}
+
+		// Volume changed locally — notify plugin (master: broadcast; individual: update slider)
+		if sendVolumeChangedToPlugin(appState.MAC, v) {
+			lastSentVolumeMu.Lock()
+			lastSentVolume = v
+			lastSentVolumeMu.Unlock()
+		}
+	}
+}
+
+// sendVolumeChangedToPlugin notifies the plugin that this device's volume changed.
+// Plugin will broadcast the new level to all other devices in the master volume group.
+func sendVolumeChangedToPlugin(mac string, level int) bool {
+	if mac == "" || flagPluginURL == "" {
+		return false
+	}
+
+	authTokenMu.RLock()
+	token := ""
+	if getAuthToken != nil {
+		token = getAuthToken()
+	}
+	authTokenMu.RUnlock()
+
+	payload := map[string]interface{}{"mac": mac, "level": level}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return false
+	}
+
+	url := strings.TrimRight(flagPluginURL, "/") + "/volume-changed"
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("X-Auth-Token", token)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("⚠️  Volume-changed notify failed: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		log.Printf("🔊 Volume changed → %d%% (broadcast to master group)", level)
+		return true
+	}
+	return false
+}
+
 // sendHeartbeat sends a single registration request and returns success.
 func sendHeartbeat(hostname, ip, mac string) bool {
 	// Compute app_states from managed apps and process list
@@ -421,17 +510,28 @@ func sendHeartbeat(hostname, ip, mac string) bool {
 	}
 
 	payload := RegistrationPayload{
-		Hostname:    hostname,
-		IP:          ip,
-		MAC:         mac,
-		Port:        flagPort,
-		OS:          runtime.GOOS,
-		Arch:        runtime.GOARCH,
-		Version:     clientVersion,
-		IsDarkWake:  isDisplayInDarkWake(),
-		Actions:     getActions(),
-		AppStates:   appStates,
-		ManagedApps: managedApps,
+		Hostname:           hostname,
+		IP:                 ip,
+		MAC:                mac,
+		Port:               flagPort,
+		OS:                 runtime.GOOS,
+		Arch:               runtime.GOARCH,
+		Version:            clientVersion,
+		IsDarkWake:         isDisplayInDarkWake(),
+		Actions:            getActions(),
+		AppStates:          appStates,
+		ManagedApps:        managedApps,
+		ScreensaverEnabled:   getEnableRemoteScreensaver(),
+		LockEnabled:          getEnableRemoteLock(),
+		EnableVolumeSlider:   getEnableVolumeSlider(),
+		JoinMasterVolume:     getJoinMasterVolume(),
+		VolumeSliderName:     getVolumeSliderName(),
+	}
+	// Volume in heartbeat only for individual slider; master volume uses volume-changed when it changes
+	if getEnableVolumeSlider() {
+		if v := GetVolumeLevel(); v >= 0 {
+			payload.Volume = &v
+		}
 	}
 	// Only read and send temperature when user enabled "Send Temperature Data" (minimizes CPU load)
 	// On failure: send null silently, no log spam

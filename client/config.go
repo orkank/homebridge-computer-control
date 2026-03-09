@@ -11,7 +11,12 @@ import (
 
 // ClientConfig holds persisted client preferences.
 type ClientConfig struct {
-	SendTemperature bool `json:"sendTemperature"`
+	SendTemperature         bool   `json:"sendTemperature"`
+	EnableRemoteScreensaver bool   `json:"enableRemoteScreensaver"`
+	EnableRemoteLock        bool   `json:"enableRemoteLock"`
+	EnableVolumeSlider      bool   `json:"enableVolumeSlider"`
+	JoinMasterVolume        bool   `json:"joinMasterVolume"`
+	VolumeSliderName        string `json:"volumeSliderName"` // default: [Hostname] - Volume
 }
 
 var (
@@ -62,13 +67,13 @@ func loadClientConfig() ClientConfig {
 		if !os.IsNotExist(err) {
 			log.Printf("⚠️  Failed to read client_config: %v", err)
 		}
-		return ClientConfig{SendTemperature: false} // default: off
+		return ClientConfig{SendTemperature: false, EnableRemoteScreensaver: false, EnableRemoteLock: false, EnableVolumeSlider: false, JoinMasterVolume: false}
 	}
 
 	var c ClientConfig
 	if err := json.Unmarshal(data, &c); err != nil {
 		log.Printf("⚠️  Failed to parse client_config: %v", err)
-		return ClientConfig{SendTemperature: false}
+		return ClientConfig{SendTemperature: false, EnableRemoteScreensaver: false, EnableRemoteLock: false, EnableVolumeSlider: false, JoinMasterVolume: false}
 	}
 	return c
 }
@@ -106,6 +111,94 @@ func getSendTemperature() bool {
 func setSendTemperature(enabled bool) {
 	configMu.Lock()
 	config.SendTemperature = enabled
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+}
+
+// getEnableRemoteScreensaver returns whether remote screensaver is enabled.
+func getEnableRemoteScreensaver() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.EnableRemoteScreensaver
+}
+
+// setEnableRemoteScreensaver updates the preference and persists it.
+func setEnableRemoteScreensaver(enabled bool) {
+	configMu.Lock()
+	config.EnableRemoteScreensaver = enabled
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+}
+
+// getEnableRemoteLock returns whether remote lock is enabled.
+func getEnableRemoteLock() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.EnableRemoteLock
+}
+
+// setEnableRemoteLock updates the preference and persists it.
+func setEnableRemoteLock(enabled bool) {
+	configMu.Lock()
+	config.EnableRemoteLock = enabled
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+}
+
+// getEnableVolumeSlider returns whether volume slider is enabled.
+func getEnableVolumeSlider() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.EnableVolumeSlider
+}
+
+// setEnableVolumeSlider updates the preference and persists it.
+// When enabled, Join Master Volume is automatically disabled (mutual exclusion).
+func setEnableVolumeSlider(enabled bool) {
+	configMu.Lock()
+	config.EnableVolumeSlider = enabled
+	if enabled {
+		config.JoinMasterVolume = false
+	}
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+}
+
+// getJoinMasterVolume returns whether to join master volume group.
+func getJoinMasterVolume() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.JoinMasterVolume
+}
+
+// setJoinMasterVolume updates the preference and persists it.
+// When enabled, Enable Volume Slider is automatically disabled (mutual exclusion).
+func setJoinMasterVolume(enabled bool) {
+	configMu.Lock()
+	config.JoinMasterVolume = enabled
+	if enabled {
+		config.EnableVolumeSlider = false
+	}
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+}
+
+// getVolumeSliderName returns the display name for this device's volume slider.
+func getVolumeSliderName() string {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.VolumeSliderName
+}
+
+// setVolumeSliderName updates the preference and persists it.
+func setVolumeSliderName(name string) {
+	configMu.Lock()
+	config.VolumeSliderName = name
 	c := config
 	configMu.Unlock()
 	saveClientConfig(c)

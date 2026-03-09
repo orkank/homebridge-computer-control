@@ -9,11 +9,19 @@ import (
 	"sync"
 )
 
+// QuitMode: how to close the app when target=off
+const (
+	QuitModeQuit     = "quit"           // Standard Quit (Graceful)
+	QuitModeKill     = "kill"           // Force Quit (Immediate)
+	QuitModeQuitKill = "quit_then_kill" // Smart Quit (Wait then Kill)
+)
+
 // ManagedAppEntry holds a single managed app with wake/sleep options.
 type ManagedAppEntry struct {
 	Name       string `json:"name"`
 	WakeBefore bool   `json:"wakeBefore,omitempty"`
 	SleepAfter bool   `json:"sleepAfter,omitempty"`
+	QuitMode   string `json:"quitMode,omitempty"` // quit, kill, quit_then_kill
 }
 
 // ManagedAppsConfig holds the persisted managed apps list.
@@ -62,7 +70,7 @@ func loadManagedAppsConfig() ManagedAppsConfig {
 			var entries []ManagedAppEntry
 			for _, n := range names {
 				if s, ok := n.(string); ok && s != "" {
-					entries = append(entries, ManagedAppEntry{Name: s})
+					entries = append(entries, ManagedAppEntry{Name: s, QuitMode: QuitModeKill})
 				}
 			}
 			return ManagedAppsConfig{Apps: entries}
@@ -74,6 +82,11 @@ func loadManagedAppsConfig() ManagedAppsConfig {
 	}
 	if c.Apps == nil {
 		c.Apps = []ManagedAppEntry{}
+	}
+	for i := range c.Apps {
+		if c.Apps[i].QuitMode == "" {
+			c.Apps[i].QuitMode = QuitModeKill
+		}
 	}
 	return c
 }

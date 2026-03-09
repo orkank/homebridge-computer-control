@@ -13,6 +13,10 @@
       "groupAccessoryName": "Computers",
       "antiSleepDeviceName": "Computer Sleep Prevention",
       "antiSleepTimer": 0,
+      "enableGlobalScreensaverSwitch": false,
+      "enableGlobalLockSwitch": false,
+      "enableGlobalVolumeSwitch": false,
+      "masterVolumeName": "Computer Volume",
       "clients": []
     },
     "properties": {
@@ -49,6 +53,30 @@
         "minimum": 0,
         "maximum": 1440,
         "description": "Auto-turn-off delay in minutes. 0 = unlimited (stays on until manually turned off)."
+      },
+      "enableGlobalScreensaverSwitch": {
+        "title": "Enable Global Screensaver Switch",
+        "type": "boolean",
+        "default": false,
+        "description": "When enabled, creates an 'All Screensavers' switch in HomeKit. Turning it ON sends screensaver command to all registered clients that have Remote Screensaver enabled. Acts as a push button (auto-resets to OFF after 1–2 seconds)."
+      },
+      "enableGlobalLockSwitch": {
+        "title": "Enable Global Lock Switch",
+        "type": "boolean",
+        "default": false,
+        "description": "When enabled, creates a 'Lock Computers' switch in HomeKit. Turning it ON locks the screen on all online clients that have Remote Lock enabled. Does not put computers to sleep. Acts as a push button (auto-resets to OFF after 1–2 seconds)."
+      },
+      "enableGlobalVolumeSwitch": {
+        "title": "Enable Global Volume (Master Slider)",
+        "type": "boolean",
+        "default": false,
+        "description": "When enabled, creates a 'Computer Volume' accessory in HomeKit. Moving the slider sets the same volume level on all clients that have 'Join Master Volume' enabled in their client app."
+      },
+      "masterVolumeName": {
+        "title": "Master Volume Accessory Name",
+        "type": "string",
+        "default": "Computer Volume",
+        "description": "Display name for the Global Volume accessory in HomeKit. Used when Enable Global Volume is on."
       },
       "clients": {
         "title": "Manual Clients",

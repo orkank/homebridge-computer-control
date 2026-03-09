@@ -18,29 +18,79 @@
   <img src="client4.png" alt="Client app" width="400">
 </p>
 
-> ⚠️ **Test version** — This plugin is still in testing.
+> ⚠️ **Test version** - This plugin is still in testing.
 
 Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homebridge. Wake them with WoL, put them to sleep remotely, and manage them as HomeKit switches.
 
-**Version:** 1.1.6
+**Version:** 1.1.7
 
-### 📱 Managed Apps — Live Application Monitoring (Real-State)
+### 📱 Managed Apps - Live Application Monitoring (Real-State) *(1.1.6)*
 
 **Managed Apps** lets you monitor and control running applications directly from HomeKit. Each app becomes a switch: **ON** = app is running, **OFF** = app is not running. Unlike fire-and-forget actions, the switch state reflects the **actual process state** from the client.
 
 | Feature | Description |
 |---------|-------------|
-| **Real-State Switch** | Switch reflects only client-reported `app_states` — never from user tap. If you turn OFF in HomeKit, the switch stays ON until the app actually quits |
+| **Real-State Switch** | Switch reflects only client-reported `app_states` - never from user tap. If you turn OFF in HomeKit, the switch stays ON until the app actually quits |
 | **Add Process** | Client **Managed Apps** tab → Add → select from running processes (searchable list). macOS: clean `.app` names; Windows: includes `.exe` |
-| **Launch / Quit** | Client `/manage-app?name=X&target=on\|off` — launch app or force-kill all matching processes |
-| **Wake Before Launch** | Same as Actions: WoL → 5s delay → wake-screen → launch app |
+| **Launch / Quit** | Client `/manage-app?name=X&target=on\|off` - launch app or quit/kill based on **When turning OFF** setting |
+| **When turning OFF** | **Standard Quit (Graceful)**, **Force Quit (Immediate)**, **Smart Quit (Wait then Kill)** |
+| **Wake Before Launch** | If computer is already reachable, skip WoL; else WoL → 5s delay → wake-screen → launch app |
 | **Sleep After Quit** | Same as Actions: 5 seconds after quit, client runs OS sleep (pmset/rundll32/systemctl) |
 
-Storage: `managed_apps.json` in the same config dir as `actions.json`. Each app: `{name, wakeBefore, sleepAfter}`.
+Storage: `managed_apps.json` in the same config dir as `actions.json`. Each app: `{name, wakeBefore, sleepAfter, quitMode}`.
 
-### 🎯 Custom Actions — One-Tap HomeKit Accessories
+### 🔊 Volume Control
 
-Define actions in the client **Actions** tab; they appear instantly as switches or buttons in HomeKit. No manual config — every action you add shows up automatically in the Home app.
+Control system volume from HomeKit using Lightbulb/Brightness (slider). Two modes - **mutually exclusive**:
+
+| Mode | Description |
+|------|-------------|
+| **Individual Slider** | Client Settings → Enable Volume Slider. Each device gets its own volume accessory (e.g. "MacBook - Volume"). |
+| **Master Volume** | Client Settings → Join Master Volume. All devices in the group share one "Computer Volume" slider. When one device changes volume locally, all others sync automatically. |
+
+| Step | Description |
+|------|-------------|
+| **Client** | Settings → Enable Volume Slider (individual) **or** Join Master Volume (group). One disables the other. |
+| **Client** | Volume Slider Name: custom name for individual slider (default: `[Hostname] - Volume`) |
+| **Plugin** | Config → Enable Global Volume (Master Slider) + Master Volume Accessory Name (default: "Computer Volume") |
+| **Real-time sync** | When Join Master Volume: client polls volume every 2s; if changed locally (keyboard), notifies plugin → plugin broadcasts to all other devices in the group |
+
+macOS: `osascript` output volume. Windows: PowerShell + COM (IAudioEndpointVolume). Linux: `pactl` (PulseAudio) or `amixer` (ALSA).
+
+### 🖼️ Screensaver Sync
+
+> ⚠️ **Experimental** - May not work stably on all setups.
+
+Start the screensaver on all computers from a single HomeKit switch.
+
+| Step | Description |
+|------|-------------|
+| **Client** | Settings → Enable Remote Screensaver |
+| **Plugin** | Config → Enable Global Screensaver Switch |
+| **HomeKit** | "All Screensavers" switch appears; tap ON → screensaver starts on all enabled **and online** clients |
+| **Online only** | Only reachable clients receive the command (2s health check); sleeping/offline devices are skipped |
+| **Feedback** | Switch stays ON ~1.5s then auto-resets to OFF (push button) |
+
+macOS: `ScreenSaverEngine`; Windows: `scrnsave.scr /s`; Linux: `xdg-screensaver activate` (fallback: xscreensaver-command).
+
+### 🔒 Lock Computers
+
+> ⚠️ **Experimental** - May not work stably on all setups.
+
+Lock the screen on all computers from a single HomeKit switch. **Does not put computers to sleep** - only locks the display.
+
+| Step | Description |
+|------|-------------|
+| **Client** | Settings → Enable Remote Lock |
+| **Plugin** | Config → Enable Global Lock Switch |
+| **HomeKit** | "Lock Computers" switch appears; tap ON → lock screen on all online enabled clients |
+| **Online only** | Same as Screensaver - only reachable clients receive the command |
+
+macOS: `pmset displaysleepnow` (display off only; computer stays awake; requires "Require password after sleep" in Security for lock). Windows: `rundll32 user32.dll,LockWorkStation`. Linux: `xdg-screensaver lock` (fallback: xscreensaver-command -lock).
+
+### 🎯 Custom Actions - One-Tap HomeKit Accessories
+
+Define actions in the client **Actions** tab; they appear instantly as switches or buttons in HomeKit. No manual config - every action you add shows up automatically in the Home app.
 
 | Platform | Available Actions |
 |----------|------------------------|
@@ -48,17 +98,17 @@ Define actions in the client **Actions** tab; they appear instantly as switches 
 | **Linux** | Shell, Batch, URL |
 | **Windows** | Batch, URL |
 
-**macOS + BetterTouchTool:** With BTT installed, you can bind any BTT CLI command to a HomeKit accessory with one tap. Commands like `trigger_named "mute"`, `display_notification "Hello"`, or `set_string_variable` — add them in the client Actions tab → they appear as switches/buttons in Home → trigger via Siri or automations.
+**macOS + BetterTouchTool:** With BTT installed, you can bind any BTT CLI command to a HomeKit accessory with one tap. Commands like `trigger_named "mute"`, `display_notification "Hello"`, or `set_string_variable` - add them in the client Actions tab → they appear as switches/buttons in Home → trigger via Siri or automations.
 
 > **Note:** BTT's Command Line / Socket Server must be enabled in BetterTouchTool's Scripting Settings first. See [BTT CLI documentation](https://docs.folivora.ai/docs/scripting/cli) for details.
 
-**Trigger by UUID:** You can also trigger any BTT trigger by its UUID: `execute_assigned_actions_for_trigger 823A845F-8D62-4950-8709-1CE5527CEADF`. Find the UUID in BTT (right-click trigger → Copy UUID) and add it as an action — no need to use the trigger name.
+**Trigger by UUID:** You can also trigger any BTT trigger by its UUID: `execute_assigned_actions_for_trigger 823A845F-8D62-4950-8709-1CE5527CEADF`. Find the UUID in BTT (right-click trigger → Copy UUID) and add it as an action - no need to use the trigger name.
 
 **Example uses:** Mute/unmute, show notifications, set variables, open URLs, run scripts, trigger shortcuts. Choose Toggle (remembers state) or Push Button (one-shot).
 
 **Wake Before / Sleep After:** Each action can optionally enable:
-- **Wake Computer Before Action** — Same flow as standard wake: WoL → 5s delay → wake-screen (display on) → run-action. Ensures display wakes from Dark Wake.
-- **Sleep Device After Action** — 5 seconds after the action triggers, the client runs the OS sleep command (macOS: pmset sleepnow, Windows: rundll32, Linux: systemctl suspend).
+- **Wake Computer Before Action** - Same flow as standard wake: WoL → 5s delay → wake-screen (display on) → run-action. Ensures display wakes from Dark Wake.
+- **Sleep Device After Action** - 5 seconds after the action triggers, the client runs the OS sleep command (macOS: pmset sleepnow, Windows: rundll32, Linux: systemctl suspend).
 
 ## Features
 
@@ -66,7 +116,7 @@ Define actions in the client **Actions** tab; they appear instantly as switches 
 |---------|-------------|
 | **Wake-on-LAN** | Wake sleeping computers from anywhere via HomeKit |
 | **Remote Sleep** | Put computers to sleep with a single tap |
-| **Group Control** | Virtual "Computers" accessory — Wake All / Sleep All in one command |
+| **Group Control** | Virtual "Computers" accessory - Wake All / Sleep All in one command |
 | **Auto-Registration** | Clients register automatically; no manual config needed |
 | **Update Notification** | Clients receive a one-time update notification with download link |
 | **macOS Power Nap** | Correctly detects Dark Wake; device stays OFF when display is asleep |
@@ -75,7 +125,10 @@ Define actions in the client **Actions** tab; they appear instantly as switches 
 | **Anti-Sleep** | Virtual switch to prevent all computers from sleeping (configurable name + optional timer) |
 | **Temperature Sensor** | Optional CPU temperature in HomeKit (client checkbox "Send Temperature Data"); Linux thermal/sensors, macOS ioreg, Windows WMI |
 | **Custom Actions** | Define BTT, shell, batch, AppleScript, or URL actions in the client; they appear as switches or buttons in HomeKit |
-| **Managed Apps** | Live app monitoring — add process names in client; each becomes a real-state switch (ON = running, OFF = not running). Launch/quit from HomeKit; optional Wake Before Launch / Sleep After Quit |
+| **Managed Apps** | Live app monitoring - add process names in client; each becomes a real-state switch (ON = running, OFF = not running). Standard/Force/Smart Quit; optional Wake Before Launch / Sleep After Quit; skip WoL when computer already online |
+| **Screensaver Sync** | Client "Enable Remote Screensaver" + plugin "Enable Global Screensaver Switch" → "All Screensavers" push button in HomeKit; sends screensaver to all online enabled clients |
+| **Lock Computers** | Client "Enable Remote Lock" + plugin "Enable Global Lock Switch" → "Lock Computers" push button; locks screen on all online enabled clients (does NOT put to sleep) |
+| **Volume Control** | Individual slider per device or Master Volume (group). Lightbulb/Brightness = volume 0–100. Real-time sync when volume changed locally on any device in master group |
 
 ## Architecture
 
@@ -173,7 +226,7 @@ sudo npm install -g ./
 
 ### 4. Homebridge Config
 
-> ⚠️ **Required** — The plugin will **not work** until the platform is added to your config. After installing, open the plugin settings in Homebridge Config UI X and **Save** the configuration. Or add the platform manually to `config.json`.
+> ⚠️ **Required** - The plugin will **not work** until the platform is added to your config. After installing, open the plugin settings in Homebridge Config UI X and **Save** the configuration. Or add the platform manually to `config.json`.
 
 Add to your `config.json` (or use Config UI X → Plugins → Computer Control → Save):
 ```json
@@ -186,6 +239,10 @@ Add to your `config.json` (or use Config UI X → Plugins → Computer Control �
       "groupAccessoryName": "Computers",
       "antiSleepDeviceName": "Computer Sleep Prevention",
       "antiSleepTimer": 0,
+      "enableGlobalScreensaverSwitch": false,
+      "enableGlobalLockSwitch": false,
+      "enableGlobalVolumeSwitch": false,
+      "masterVolumeName": "Computer Volume",
       "clients": []
     }
   ]
@@ -237,17 +294,32 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ## Changelog
 
-### 1.1.6 (Current)
+### 1.1.7 (Current)
 
-- **Managed Apps — Live Application Monitoring**: New feature for real-state app control
-  - Client **Managed Apps** tab: add process names from running processes (searchable list, instant refresh)
-  - Each app becomes a HomeKit switch: ON = running, OFF = not running (state from client heartbeat only)
-  - Launch app (target=on) or force-kill (target=off) via `/manage-app` endpoint
-  - **Wake Before Launch**: Same as Actions — WoL → 5s → wake-screen → launch
-  - **Sleep After Quit**: Same as Actions — 5s after quit, client runs OS sleep
-  - Storage: `managed_apps.json` with `{name, wakeBefore, sleepAfter}` per app
-  - macOS: clean `.app` names; Windows: `.exe` in list; case-insensitive matching
-- **Add modal UX**: Managed Apps add dialog enlarged; Entry + filterable List (type to search); auto-focus on open
+- **Volume Control**: System volume from HomeKit (Lightbulb/Brightness slider)
+  - Individual slider: Client "Enable Volume Slider" → each device gets its own volume accessory
+  - Master Volume: Client "Join Master Volume" + plugin "Enable Global Volume" → one slider controls all devices in group
+  - Mutual exclusion: enabling one disables the other
+  - Real-time sync: when volume changed locally (keyboard) on any device in master group, plugin broadcasts to all others
+  - Client `/volume?level=[0-100]` endpoint; macOS osascript, Windows PowerShell+COM, Linux pactl/amixer
+  - Client Settings: Volume Slider Name (default: `[Hostname] - Volume`)
+- **Screensaver Sync**: Start screensaver on all computers from HomeKit
+  - Client Settings: "Enable Remote Screensaver" checkbox
+  - Client `/screensaver` endpoint: macOS `ScreenSaverEngine`, Windows `scrnsave.scr /s`, Linux `xdg-screensaver activate` (fallback: xscreensaver-command)
+  - Plugin config: "Enable Global Screensaver Switch" → creates "All Screensavers" in HomeKit
+  - Push button: ON sends to all online clients with screensaver enabled; auto-resets to OFF after 1.5s
+- **Lock Computers**: Lock screen on all computers from HomeKit (does NOT put to sleep)
+  - Client Settings: "Enable Remote Lock" checkbox
+  - Client `/lock` endpoint: macOS `pmset displaysleepnow`, Windows `rundll32 user32.dll,LockWorkStation`, Linux `xdg-screensaver lock`
+  - Plugin config: "Enable Global Lock Switch" → creates "Lock Computers" in HomeKit
+  - Push button: ON sends to all online clients with lock enabled; auto-resets to OFF after 1.5s
+- **Managed Apps**: Quit mode names - Standard Quit (Graceful), Force Quit (Immediate), Smart Quit (Wait then Kill)
+- **Managed Apps**: Skip WoL when computer already online (2s reachability check before wake sequence)
+- **Managed Apps**: Add modal UX - enlarged dialog, Entry + filterable List, auto-focus
+
+### 1.1.6
+
+- **Managed Apps - Live Application Monitoring**: Real-state app control; Quit/Kill/Quit+Wait Kill; Wake Before Launch; Sleep After Quit
 
 ### 1.1.5
 
@@ -257,7 +329,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ### 1.1.4
 
-- **Custom Actions**: Define actions in the client (BTT, shell, batch, AppleScript, URL) — they appear as HomeKit switches or tap buttons
+- **Custom Actions**: Define actions in the client (BTT, shell, batch, AppleScript, URL) - they appear as HomeKit switches or tap buttons
   - Client Actions tab: add/delete actions; `actions.json` storage; heartbeat includes actions
   - Toggle (remembers state) or Push Button (one-shot); `{status}` substitution for on/off
   - BTT: full path to bttcli; args passed correctly (no shell wrapping)
@@ -266,7 +338,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 - **Platform-specific actions**: macOS (all); Linux (shell, batch, url); Windows (batch, url only)
 - **Client UI**: Larger main window (620×720); Delete button blue/white; action name hint (no auto hostname prefix)
 - **Example scripts**: `examples/` folder with example.sh, example.bat, example.applescript
-- **Plugin fix**: `@homebridge/plugin-ui-utils` in dependencies + `homebridge-ui` in files — Config UI opens correctly on Node 20
+- **Plugin fix**: `@homebridge/plugin-ui-utils` in dependencies + `homebridge-ui` in files - Config UI opens correctly on Node 20
 
 ### 1.1.2 / 1.1.3
 
@@ -288,7 +360,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 - **Anti-Sleep device**: Virtual switch to prevent all computers from sleeping
   - Config: `antiSleepDeviceName` (default: "Computer Sleep Prevention"), `antiSleepTimer` (minutes, 0 = unlimited)
   - Siri: "Hey Siri, turn on [name]"
-  - Client: `/stay-awake?enabled=true|false` — macOS: caffeinate -i, Windows: SetThreadExecutionState, Linux: systemd-inhibit
+  - Client: `/stay-awake?enabled=true|false` - macOS: caffeinate -i, Windows: SetThreadExecutionState, Linux: systemd-inhibit
   - Client GUI: Anti-Sleep status indicator when active
 - **Update notification**: Replaced auto-update with one-time notification; Download button opens link in browser
 - **macOS client**: Zip distribution; Gatekeeper note (xattr -cr) in README and update dialog
@@ -296,7 +368,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ### 1.0.0
 
-- **Group accessory**: Virtual "Computers" switch — Wake All / Sleep All (configurable name)
+- **Group accessory**: Virtual "Computers" switch - Wake All / Sleep All (configurable name)
 - **Auto-update**: Clients check version on heartbeat; download and self-update when plugin is newer
 - **Token auth**: Plugin issues tokens on registration; client accepts only token-bearing requests (sleep, health, wake-screen)
 - **macOS Dark Wake**: Uses `system_profiler SPDisplaysDataType` for Apple Silicon; `ioreg` fallback for Intel
@@ -318,12 +390,15 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 | **Sleep (macOS)** | `pmset sleepnow` (osascript fallback) |
 | **Sleep (Windows)** | `rundll32.exe powrprof.dll,SetSuspendState 0,1,0` |
 | **Sleep (Linux)** | `systemctl suspend` |
-| **macOS Hidden** | `.app` with `LSUIElement=true` — no Dock icon, no terminal |
-| **Windows Hidden** | Built with `-H windowsgui` — no console window |
+| **macOS Hidden** | `.app` with `LSUIElement=true` - no Dock icon, no terminal |
+| **Windows Hidden** | Built with `-H windowsgui` - no console window |
 | **Version** | `--version` flag prints version; GUI shows version in header, info form, and About |
 | **Temperature** | Optional "Send Temperature Data" checkbox; persisted in `client_config.json`; only reads CPU temp when enabled (minimizes CPU load) |
 | **Actions** | Define custom actions (BTT, shell, batch, AppleScript, URL) in Actions tab; stored in `actions.json`; appear as HomeKit switches/buttons |
 | **Managed Apps** | Add process names in Managed Apps tab; stored in `managed_apps.json`; heartbeat sends `app_states` (name → running); each app becomes a real-state switch in HomeKit |
+| **Remote Screensaver** | Settings checkbox "Enable Remote Screensaver"; when enabled, client responds to `/screensaver` and advertises `screensaverEnabled` in heartbeat |
+| **Remote Lock** | Settings checkbox "Enable Remote Lock"; when enabled, client responds to `/lock` and advertises `lockEnabled` in heartbeat |
+| **Volume Control** | "Enable Volume Slider" (individual) or "Join Master Volume" (group); mutually exclusive. Volume Slider Name for individual. Polls volume every 2s when in master group; notifies plugin on local change |
 
 ### Temperature Sensor (Optional)
 
@@ -344,7 +419,9 @@ Value sent in millidegree Celsius; plugin converts to °C (÷1000). When checkbo
 | **Matching** | Case-insensitive; Windows `.exe` handled automatically |
 | **Heartbeat** | Before each heartbeat, client checks `IsProcessRunning()` for each managed app; sends `app_states: {AppName: true/false}` |
 | **Launch** | macOS: `open -a "AppName"`; Windows: `start "" "AppName"`; Linux: `exec` |
-| **Quit** | Force-kill all processes matching the name (gopsutil) |
+| **Standard Quit (Graceful)** | macOS: `osascript quit app`; Windows: `taskkill` without /F; Linux: `killall` (SIGTERM) |
+| **Force Quit (Immediate)** | Force-kill all processes matching the name (gopsutil) |
+| **Smart Quit (Wait then Kill)** | Try graceful quit, wait 4s, then force kill if still running |
 
 ### macOS Sleep / Power Nap Mitigation
 
@@ -367,6 +444,7 @@ Value sent in millidegree Celsius; plugin converts to °C (÷1000). When checkbo
 |---|---|---|
 | `POST` | `/register` | Client heartbeat/registration (returns token; may include update info) |
 | `POST` | `/going-to-sleep` | Client notifies before sleeping (body: `{"mac":"..."}`) |
+| `POST` | `/volume-changed` | Client notifies when volume changed locally (body: `{"mac":"...","level":0-100}`); plugin broadcasts to other devices in master group |
 | `GET` | `/clients` | List all registered clients |
 | `DELETE` | `/clients/:mac` | Remove a client |
 | `GET` | `/download` | List available client binaries |
@@ -384,7 +462,10 @@ All client endpoints require `X-Auth-Token` header (issued by plugin on registra
 | `POST` | `/wake-screen` | Force display wake (macOS: caffeinate + key + brightness) |
 | `GET` | `/stay-awake?enabled=true\|false` | Enable/disable system sleep prevention (Anti-Sleep) |
 | `GET` | `/run-action?name=X&state=on\|off` | Execute a named action (BTT, shell, batch, AppleScript, URL) |
-| `GET` | `/manage-app?name=X&target=on\|off` | Launch app (target=on) or kill all processes matching name (target=off) |
+| `GET` | `/manage-app?name=X&target=on\|off` | Launch app (target=on) or quit/kill (target=off) based on app's QuitMode |
+| `GET` | `/screensaver` | Start screensaver (requires Enable Remote Screensaver in client) |
+| `GET` | `/lock` | Lock screen (requires Enable Remote Lock in client; does not sleep) |
+| `GET` | `/volume` | Get current volume (no params) or set volume (`?level=0-100`; requires Enable Volume Slider or Join Master Volume) |
 
 ## Publishing (Maintainers)
 

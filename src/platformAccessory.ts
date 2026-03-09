@@ -9,6 +9,9 @@ import { RegisteredClient, ClientAction } from './settings';
 
 export const GROUP_ACCESSORY_UUID = 'computer-control-group';
 export const ANTI_SLEEP_ACCESSORY_UUID = 'computer-control-anti-sleep';
+export const SCREENSAVER_ACCESSORY_UUID = 'computer-control-all-screensavers';
+export const LOCK_ACCESSORY_UUID = 'computer-control-lock-computers';
+export const GLOBAL_VOLUME_ACCESSORY_UUID = 'computer-control-global-volume';
 
 /**
  * GroupComputerAccessory
@@ -228,6 +231,328 @@ export class AntiSleepAccessory {
 }
 
 /**
+ * AllScreensaversAccessory
+ *
+ * Push-button switch: ON sends screensaver to all clients with screensaverEnabled.
+ * Auto-resets to OFF after 1.5 seconds (screensaver state is hard to track).
+ */
+export class AllScreensaversAccessory {
+  private service: Service;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    private readonly accessory: PlatformAccessory,
+    displayName: string,
+  ) {
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, displayName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Screensaver Sync')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, SCREENSAVER_ACCESSORY_UUID);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Switch) ||
+      this.accessory.addService(this.platform.Service.Switch);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(() => false)
+      .onSet(this.handleOnSet.bind(this));
+  }
+
+  private async handleOnSet(value: CharacteristicValue): Promise<void> {
+    if (!(value as boolean)) {
+      return;
+    }
+
+    this.platform.log.info('🖼️ All Screensavers — sending to enabled clients');
+    await this.platform.sendScreensaverToAllClients();
+
+    // Push button: stay ON 1.5s for feedback, then reset to OFF
+    setTimeout(() => {
+      this.service.updateCharacteristic(this.platform.Characteristic.On, false);
+    }, 1500);
+  }
+}
+
+/**
+ * LockComputersAccessory
+ *
+ * Push-button switch: ON locks screen on all online clients with lockEnabled.
+ * Does NOT put computers to sleep. Same logic as All Screensavers.
+ */
+export class LockComputersAccessory {
+  private service: Service;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    private readonly accessory: PlatformAccessory,
+    displayName: string,
+  ) {
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, displayName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Lock Computers')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, LOCK_ACCESSORY_UUID);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Switch) ||
+      this.accessory.addService(this.platform.Service.Switch);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(() => false)
+      .onSet(this.handleOnSet.bind(this));
+  }
+
+  private async handleOnSet(value: CharacteristicValue): Promise<void> {
+    if (!(value as boolean)) {
+      return;
+    }
+
+    this.platform.log.info('🔒 Lock Computers — sending to online enabled clients');
+    await this.platform.sendLockToAllClients();
+
+    setTimeout(() => {
+      this.service.updateCharacteristic(this.platform.Characteristic.On, false);
+    }, 1500);
+  }
+}
+
+/**
+ * VolumeAccessory
+ *
+ * Per-device volume slider using Lightbulb + Brightness (0-100 = volume level).
+ * Display name: client.volumeSliderName or "[Hostname] - Volume".
+ */
+export class VolumeAccessory {
+  public readonly accessory: PlatformAccessory;
+  private service: Service;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    accessory: PlatformAccessory,
+    private client: RegisteredClient,
+  ) {
+    this.accessory = accessory;
+    const displayName = this.getDisplayName();
+
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, displayName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Volume')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, `volume-${client.mac}`);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Lightbulb) ||
+      this.accessory.addService(this.platform.Service.Lightbulb);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.handleOnGet.bind(this))
+      .onSet(this.handleOnSet.bind(this));
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.Brightness)
+      .onGet(this.handleBrightnessGet.bind(this))
+      .onSet(this.handleBrightnessSet.bind(this));
+
+    this.syncVolumeToCharacteristics();
+  }
+
+  private getDisplayName(): string {
+    const name = (this.client.volumeSliderName || '').trim();
+    if (name) return name;
+    return `${this.client.hostname} - Volume`;
+  }
+
+  public updateClient(client: RegisteredClient): void {
+    this.client = client;
+    const displayName = this.getDisplayName();
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+    this.syncVolumeToCharacteristics();
+  }
+
+  private syncVolumeToCharacteristics(): void {
+    const v = this.client.volume;
+    const level = typeof v === 'number' && v >= 0 && v <= 100 ? v : 50;
+    this.service.updateCharacteristic(this.platform.Characteristic.Brightness, level);
+    this.service.updateCharacteristic(this.platform.Characteristic.On, level > 0);
+  }
+
+  private handleOnGet(): CharacteristicValue {
+    const v = this.client.volume;
+    if (typeof v === 'number' && v >= 0 && v <= 100) return v > 0;
+    return true;
+  }
+
+  private handleOnSet(value: CharacteristicValue): void {
+    if (value as boolean) {
+      // Turn on: if volume is 0, set to 50
+      if (this.client.volume === 0) {
+        this.client.volume = 50;
+        this.syncVolumeToCharacteristics();
+        this.platform.sendVolumeRequest(this.client.ip, this.client.port, 50, this.client.token);
+      }
+      return;
+    }
+    const level = 0;
+    this.client.volume = level;
+    this.syncVolumeToCharacteristics();
+    this.platform.sendVolumeRequest(this.client.ip, this.client.port, level, this.client.token);
+  }
+
+  private handleBrightnessGet(): CharacteristicValue {
+    const v = this.client.volume;
+    if (typeof v === 'number' && v >= 0 && v <= 100) return v;
+    return 50;
+  }
+
+  private async handleBrightnessSet(value: CharacteristicValue): Promise<void> {
+    const level = Math.round(Math.min(100, Math.max(0, value as number)));
+    const ok = await this.platform.sendVolumeRequest(
+      this.client.ip,
+      this.client.port,
+      level,
+      this.client.token,
+    );
+    if (ok) {
+      this.client.volume = level;
+      this.syncVolumeToCharacteristics();
+    }
+  }
+}
+
+/**
+ * GlobalVolumeAccessory
+ *
+ * Master volume slider: sets same level on all clients with Join Master Volume.
+ * Uses Lightbulb + Brightness. Display name from config.masterVolumeName (default: Computer Volume).
+ */
+export class GlobalVolumeAccessory {
+  private service: Service;
+  /** Last set value — never wait for client responses; return this to HomeKit. */
+  private lastSetLevel = 50;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    private readonly accessory: PlatformAccessory,
+    displayName: string,
+  ) {
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, displayName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Global Volume')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, GLOBAL_VOLUME_ACCESSORY_UUID);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Lightbulb) ||
+      this.accessory.addService(this.platform.Service.Lightbulb);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.handleOnGet.bind(this))
+      .onSet(this.handleOnSet.bind(this));
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.Brightness)
+      .onGet(this.handleBrightnessGet.bind(this))
+      .onSet(this.handleBrightnessSet.bind(this));
+
+    const avg = this.getAverageVolume();
+    if (avg >= 0) {
+      this.lastSetLevel = avg;
+      this.syncVolumeToCharacteristics();
+    }
+  }
+
+  private syncVolumeToCharacteristics(): void {
+    this.service.updateCharacteristic(this.platform.Characteristic.Brightness, this.lastSetLevel);
+    this.service.updateCharacteristic(this.platform.Characteristic.On, this.lastSetLevel > 0);
+  }
+
+  private handleOnGet(): CharacteristicValue {
+    return this.lastSetLevel > 0;
+  }
+
+  private handleOnSet(value: CharacteristicValue): void {
+    if (value as boolean) {
+      if (this.lastSetLevel === 0) {
+        this.lastSetLevel = 50;
+        this.syncVolumeToCharacteristics();
+        this.platform.sendVolumeToAllClients(50);
+      }
+      return;
+    }
+    this.lastSetLevel = 0;
+    this.syncVolumeToCharacteristics();
+    this.platform.sendVolumeToAllClients(0);
+  }
+
+  public updateDisplayName(name: string): void {
+    this.service.setCharacteristic(this.platform.Characteristic.Name, name);
+    this.accessory.updateDisplayName(name);
+    const infoService = this.accessory.getService(this.platform.Service.AccessoryInformation);
+    if (infoService) {
+      infoService.updateCharacteristic(this.platform.Characteristic.Name, name);
+    }
+  }
+
+  public updateVolumeFromHeartbeat(): void {
+    const avg = this.getAverageVolume();
+    if (avg >= 0) {
+      this.lastSetLevel = avg;
+      this.syncVolumeToCharacteristics();
+    }
+  }
+
+  /** Set volume level directly (e.g. from volume-changed); no client query. */
+  public updateVolumeLevel(level: number): void {
+    this.lastSetLevel = Math.round(Math.min(100, Math.max(0, level)));
+    this.syncVolumeToCharacteristics();
+  }
+
+  private getAverageVolume(): number {
+    const clients = this.platform.getClientsWithJoinMasterVolume();
+    if (clients.length === 0) return -1;
+    let sum = 0;
+    let count = 0;
+    for (const c of clients) {
+      const v = c.volume;
+      if (typeof v === 'number' && v >= 0 && v <= 100) {
+        sum += v;
+        count++;
+      }
+    }
+    if (count === 0) return -1;
+    return Math.round(sum / count);
+  }
+
+  private handleBrightnessGet(): CharacteristicValue {
+    return this.lastSetLevel;
+  }
+
+  private handleBrightnessSet(value: CharacteristicValue): void {
+    const level = Math.round(Math.min(100, Math.max(0, value as number)));
+    this.lastSetLevel = level;
+    this.syncVolumeToCharacteristics();
+    this.platform.sendVolumeToAllClients(level);
+  }
+}
+
+/**
  * ComputerAccessory
  *
  * Handles individual computer accessories in HomeKit.
@@ -402,25 +727,34 @@ export class ManagedAppAccessory {
     const targetState = value as boolean;
     const target = targetState ? 'on' : 'off';
 
-    // Wake before launch: same flow as Wake Before Action (WoL → 5s → wake-screen → manage-app)
+    // Wake before launch: if computer is already reachable, skip WoL; else WoL → 5s → wake-screen
     const appConfig = this.client.managedApps?.find(
       (a) => a.name.toLowerCase() === this.appName.toLowerCase(),
     );
     if (target === 'on' && appConfig?.wakeBefore && this.client.mac) {
-      this.platform.log.info(`⏰ Wake before launch: ${this.client.hostname}`);
-      await this.platform.sendWakeOnLan(this.client.mac);
-      await new Promise((r) => setTimeout(r, 5000));
-      const wakeScreenOk = await this.platform.sendWakeScreenRequest(
+      const reachable = await this.platform.quickReachabilityCheck(
         this.client.ip,
         this.client.port,
         this.client.token,
       );
-      if (wakeScreenOk) {
-        this.platform.log.info(`✅ Wake-screen sent (display on): ${this.client.hostname}`);
+      if (reachable) {
+        this.platform.log.info(`✅ Computer already online, skipping WoL: ${this.client.hostname}`);
       } else {
-        this.platform.log.debug(
-          `⚠️  Wake-screen failed for ${this.client.hostname} (may be non-macOS or not yet online)`,
+        this.platform.log.info(`⏰ Wake before launch: ${this.client.hostname}`);
+        await this.platform.sendWakeOnLan(this.client.mac);
+        await new Promise((r) => setTimeout(r, 5000));
+        const wakeScreenOk = await this.platform.sendWakeScreenRequest(
+          this.client.ip,
+          this.client.port,
+          this.client.token,
         );
+        if (wakeScreenOk) {
+          this.platform.log.info(`✅ Wake-screen sent (display on): ${this.client.hostname}`);
+        } else {
+          this.platform.log.debug(
+            `⚠️  Wake-screen failed for ${this.client.hostname} (may be non-macOS or not yet online)`,
+          );
+        }
       }
     }
 

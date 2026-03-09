@@ -34,8 +34,15 @@ import {
   AntiSleepAccessory,
   ActionAccessory,
   ManagedAppAccessory,
+  AllScreensaversAccessory,
+  LockComputersAccessory,
+  VolumeAccessory,
+  GlobalVolumeAccessory,
   GROUP_ACCESSORY_UUID,
   ANTI_SLEEP_ACCESSORY_UUID,
+  SCREENSAVER_ACCESSORY_UUID,
+  LOCK_ACCESSORY_UUID,
+  GLOBAL_VOLUME_ACCESSORY_UUID,
 } from './platformAccessory';
 
 /**
@@ -131,6 +138,10 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   private readonly managedAppAccessories: Map<string, ManagedAppAccessory> = new Map(); // key: mac:appName
   private groupAccessory: GroupComputerAccessory | null = null;
   private antiSleepAccessory: AntiSleepAccessory | null = null;
+  private screensaverAccessory: AllScreensaversAccessory | null = null;
+  private lockAccessory: LockComputersAccessory | null = null;
+  private readonly volumeAccessories: Map<string, VolumeAccessory> = new Map(); // key: mac
+  private globalVolumeAccessory: GlobalVolumeAccessory | null = null;
 
   // MAC -> timestamp when we received "going to sleep". Used for 10s debounce.
   private readonly sleepTimestamps: Map<string, number> = new Map();
@@ -197,7 +208,7 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       // CORS headers for convenience
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token');
 
       if (req.method === 'OPTIONS') {
         res.writeHead(200);
@@ -216,6 +227,12 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       // ── Going to Sleep (client notifies before sleeping) ──
       if (req.method === 'POST' && url === '/going-to-sleep') {
         this.handleGoingToSleep(req, res);
+        return;
+      }
+
+      // ── Volume Changed (client notifies when volume changed locally; broadcast to master group) ──
+      if (req.method === 'POST' && url === '/volume-changed') {
+        this.handleVolumeChanged(req, res);
         return;
       }
 
@@ -303,6 +320,81 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   }
 
   /**
+   * Handle "volume changed" notification from client (local volume change).
+   * Broadcasts the new level to all OTHER devices in the master volume group.
+   */
+  private handleVolumeChanged(req: http.IncomingMessage, res: http.ServerResponse): void {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        const data = body ? (JSON.parse(body) as { mac?: string; level?: number }) : {};
+        const mac = data.mac;
+        const level = typeof data.level === 'number' ? Math.round(Math.min(100, Math.max(0, data.level))) : undefined;
+
+        if (!mac || level === undefined) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing mac or level' }));
+          return;
+        }
+
+        const macKey = mac.toUpperCase();
+        const client = this.clients.get(macKey);
+        if (!client) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Ignored (client not found)' }));
+          return;
+        }
+        if (!client.joinMasterVolume && !client.enableVolumeSlider) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Ignored (no volume slider)' }));
+          return;
+        }
+
+        // Verify token if provided
+        const token = req.headers['x-auth-token'] as string | undefined;
+        if (client.token && token && client.token !== token) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid token' }));
+          return;
+        }
+
+        client.volume = level;
+        this.saveClients();
+
+        if (client.joinMasterVolume) {
+          // Update global slider
+          if (this.globalVolumeAccessory) {
+            this.globalVolumeAccessory.updateVolumeLevel(level);
+          }
+          // Fire-and-forget: broadcast to all OTHER clients (excluding sender)
+          const masterClients = this.getClientsWithJoinMasterVolume();
+          for (const c of masterClients) {
+            if (c.mac.toUpperCase() === macKey) continue;
+            c.volume = level;
+            this.sendVolumeRequest(c.ip, c.port, level, c.token);
+          }
+          this.log.info(`🔊 Volume changed from ${client.hostname} → ${level}% (broadcast to ${masterClients.length - 1} device(s))`);
+        } else {
+          // Individual volume: update that device's accessory
+          const volHandler = this.volumeAccessories.get(macKey);
+          if (volHandler) {
+            volHandler.updateClient(client);
+          }
+          this.log.info(`🔊 Volume changed from ${client.hostname} → ${level}% (individual)`);
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Broadcast sent' }));
+      } catch (err) {
+        this.log.error('❌ Failed to parse volume-changed:', (err as Error).message);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+  }
+
+  /**
    * Handle incoming client registration (heartbeat).
    */
   private handleRegistration(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -350,6 +442,13 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
         const appStates = (data as { appStates?: Record<string, boolean> }).appStates;
         const managedApps = (data as { managedApps?: ClientManagedApp[] }).managedApps;
+        const screensaverEnabled = !!(data as { screensaverEnabled?: boolean }).screensaverEnabled;
+        const lockEnabled = !!(data as { lockEnabled?: boolean }).lockEnabled;
+        const enableVolumeSlider = !!(data as { enableVolumeSlider?: boolean }).enableVolumeSlider;
+        const joinMasterVolume = !!(data as { joinMasterVolume?: boolean }).joinMasterVolume;
+        const volumeSliderName = (data as { volumeSliderName?: string }).volumeSliderName || '';
+        const volume = (data as { volume?: number | null }).volume;
+        const volumeVal = typeof volume === 'number' && volume >= 0 && volume <= 100 ? volume : undefined;
 
         const client: RegisteredClient = {
           hostname: data.hostname || 'Unknown',
@@ -365,6 +464,12 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           actions,
           appStates,
           managedApps,
+          screensaverEnabled,
+          lockEnabled,
+          enableVolumeSlider,
+          joinMasterVolume,
+          volumeSliderName: volumeSliderName || undefined,
+          volume: volumeVal,
         };
 
         this.clients.set(macKey, client);
@@ -378,6 +483,14 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
         // Add/update/remove managed app accessories for this client
         this.addOrUpdateManagedAppAccessories(macKey, client);
+
+        // Add/update/remove volume accessory for this client
+        this.addOrUpdateVolumeAccessories(macKey, client);
+
+        // Update global volume accessory when any joinMasterVolume client updates
+        if (this.globalVolumeAccessory && client.joinMasterVolume) {
+          this.globalVolumeAccessory.updateVolumeFromHeartbeat();
+        }
 
         this.log.info(
           `💓 Registration from ${client.hostname} (${client.ip} / ${client.mac})${isDarkWake ? ' [Dark Wake — kept OFF]' : ''}`,
@@ -593,6 +706,20 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
     // Add or update the Anti-Sleep accessory (if configured)
     this.addOrUpdateAntiSleepAccessory();
 
+    // Add or update the All Screensavers accessory (if configured)
+    this.addOrUpdateScreensaverAccessory();
+
+    // Add or update the Lock Computers accessory (if configured)
+    this.addOrUpdateLockAccessory();
+
+    // Add or update the Global Volume accessory (if configured)
+    this.addOrUpdateGlobalVolumeAccessory();
+
+    // Add or update volume accessories for each client with enableVolumeSlider
+    for (const [macKey, client] of this.clients) {
+      this.addOrUpdateVolumeAccessories(macKey, client);
+    }
+
     // Build set of valid accessory UUIDs: clients + their actions + group + antiSleep
     const clientUUIDs = new Set(
       Array.from(this.clients.keys()).map((mac) =>
@@ -612,14 +739,27 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
     }
     const groupUUID = this.api.hap.uuid.generate(GROUP_ACCESSORY_UUID);
     const antiSleepUUID = this.api.hap.uuid.generate(ANTI_SLEEP_ACCESSORY_UUID);
+    const screensaverUUID = this.api.hap.uuid.generate(SCREENSAVER_ACCESSORY_UUID);
+    const lockUUID = this.api.hap.uuid.generate(LOCK_ACCESSORY_UUID);
+    const globalVolumeUUID = this.api.hap.uuid.generate(GLOBAL_VOLUME_ACCESSORY_UUID);
+    const volumeUUIDs = new Set<string>();
+    for (const [macKey, client] of this.clients) {
+      if (client.enableVolumeSlider) {
+        volumeUUIDs.add(this.api.hap.uuid.generate(`volume-${macKey}`));
+      }
+    }
 
     const accessoriesToRemove = this.accessories.filter(
       (acc) =>
         acc.UUID !== groupUUID &&
         acc.UUID !== antiSleepUUID &&
+        acc.UUID !== screensaverUUID &&
+        acc.UUID !== lockUUID &&
+        acc.UUID !== globalVolumeUUID &&
         !clientUUIDs.has(acc.UUID) &&
         !actionUUIDs.has(acc.UUID) &&
-        !managedAppUUIDs.has(acc.UUID),
+        !managedAppUUIDs.has(acc.UUID) &&
+        !volumeUUIDs.has(acc.UUID),
     );
 
     if (accessoriesToRemove.length > 0) {
@@ -706,6 +846,190 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   }
 
   /**
+   * Add or update the All Screensavers accessory (push button).
+   * Only created if enableGlobalScreensaverSwitch is true.
+   */
+  private addOrUpdateScreensaverAccessory(): void {
+    const enabled = this.getEnableGlobalScreensaverSwitch();
+    const uuid = this.api.hap.uuid.generate(SCREENSAVER_ACCESSORY_UUID);
+    const existing = this.accessories.find((acc) => acc.UUID === uuid);
+    const displayName = 'All Screensavers';
+
+    if (!enabled) {
+      if (existing) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existing]);
+        this.accessories.splice(this.accessories.indexOf(existing), 1);
+        this.screensaverAccessory = null;
+        this.log.info('🗑️  All Screensavers accessory removed');
+      }
+      return;
+    }
+
+    if (existing) {
+      existing.updateDisplayName(displayName);
+      const infoService = existing.getService(this.Service.AccessoryInformation);
+      if (infoService) {
+        infoService.updateCharacteristic(this.Characteristic.Name, displayName);
+      }
+      this.api.updatePlatformAccessories([existing]);
+
+      if (!this.screensaverAccessory) {
+        this.screensaverAccessory = new AllScreensaversAccessory(this, existing, displayName);
+      }
+      this.log.debug(`🔄 Updated All Screensavers accessory`);
+    } else {
+      const accessory = new this.api.platformAccessory(displayName, uuid);
+      accessory.context.isScreensaver = true;
+
+      this.screensaverAccessory = new AllScreensaversAccessory(this, accessory, displayName);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+      this.log.info(`➕ Added All Screensavers accessory`);
+    }
+  }
+
+  /**
+   * Add or update the Lock Computers accessory (push button).
+   * Only created if enableGlobalLockSwitch is true.
+   */
+  private addOrUpdateLockAccessory(): void {
+    const enabled = this.getEnableGlobalLockSwitch();
+    const uuid = this.api.hap.uuid.generate(LOCK_ACCESSORY_UUID);
+    const existing = this.accessories.find((acc) => acc.UUID === uuid);
+    const displayName = 'Lock Computers';
+
+    if (!enabled) {
+      if (existing) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existing]);
+        this.accessories.splice(this.accessories.indexOf(existing), 1);
+        this.lockAccessory = null;
+        this.log.info('🗑️  Lock Computers accessory removed');
+      }
+      return;
+    }
+
+    if (existing) {
+      existing.updateDisplayName(displayName);
+      const infoService = existing.getService(this.Service.AccessoryInformation);
+      if (infoService) {
+        infoService.updateCharacteristic(this.Characteristic.Name, displayName);
+      }
+      this.api.updatePlatformAccessories([existing]);
+
+      if (!this.lockAccessory) {
+        this.lockAccessory = new LockComputersAccessory(this, existing, displayName);
+      }
+      this.log.debug(`🔄 Updated Lock Computers accessory`);
+    } else {
+      const accessory = new this.api.platformAccessory(displayName, uuid);
+      accessory.context.isLock = true;
+
+      this.lockAccessory = new LockComputersAccessory(this, accessory, displayName);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+      this.log.info(`➕ Added Lock Computers accessory`);
+    }
+  }
+
+  /**
+   * Add or update the Global Volume accessory (Master Slider).
+   * Only created if enableGlobalVolumeSwitch is true.
+   */
+  private addOrUpdateGlobalVolumeAccessory(): void {
+    const enabled = this.getEnableGlobalVolumeSwitch();
+    const displayName = this.getMasterVolumeName() || 'Computer Volume';
+    const uuid = this.api.hap.uuid.generate(GLOBAL_VOLUME_ACCESSORY_UUID);
+    const existing = this.accessories.find((acc) => acc.UUID === uuid);
+
+    if (!enabled) {
+      if (existing) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existing]);
+        this.accessories.splice(this.accessories.indexOf(existing), 1);
+        this.globalVolumeAccessory = null;
+        this.log.info('🗑️  Global Volume accessory removed');
+      }
+      return;
+    }
+
+    if (existing) {
+      existing.updateDisplayName(displayName);
+      const infoService = existing.getService(this.Service.AccessoryInformation);
+      if (infoService) {
+        infoService.updateCharacteristic(this.Characteristic.Name, displayName);
+      }
+      this.api.updatePlatformAccessories([existing]);
+
+      if (this.globalVolumeAccessory) {
+        this.globalVolumeAccessory.updateDisplayName(displayName);
+        this.globalVolumeAccessory.updateVolumeFromHeartbeat();
+      } else {
+        this.globalVolumeAccessory = new GlobalVolumeAccessory(this, existing, displayName);
+      }
+      this.log.debug(`🔄 Updated Global Volume accessory`);
+    } else {
+      const accessory = new this.api.platformAccessory(displayName, uuid);
+      accessory.context.isGlobalVolume = true;
+
+      this.globalVolumeAccessory = new GlobalVolumeAccessory(this, accessory, displayName);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+      this.log.info(`➕ Added Global Volume accessory: ${displayName}`);
+    }
+  }
+
+  /**
+   * Add or update the volume accessory for a client.
+   * Only created if client has enableVolumeSlider.
+   */
+  private addOrUpdateVolumeAccessories(macKey: string, client: RegisteredClient): void {
+    if (!client.enableVolumeSlider) {
+      const key = macKey;
+      const handler = this.volumeAccessories.get(key);
+      if (handler) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [handler.accessory]);
+        const idx = this.accessories.indexOf(handler.accessory);
+        if (idx >= 0) this.accessories.splice(idx, 1);
+        this.volumeAccessories.delete(key);
+        this.log.info(`🗑️  Volume accessory removed for ${client.hostname}`);
+      }
+      return;
+    }
+
+    const displayName = (client.volumeSliderName || '').trim()
+      ? (client.volumeSliderName || '').trim()
+      : `${client.hostname} - Volume`;
+    const uuid = this.api.hap.uuid.generate(`volume-${macKey}`);
+    const existing = this.accessories.find((acc) => acc.UUID === uuid);
+
+    if (existing) {
+      existing.updateDisplayName(displayName);
+      const infoService = existing.getService(this.Service.AccessoryInformation);
+      if (infoService) {
+        infoService.updateCharacteristic(this.Characteristic.Name, displayName);
+      }
+      this.api.updatePlatformAccessories([existing]);
+
+      if (this.volumeAccessories.has(macKey)) {
+        this.volumeAccessories.get(macKey)!.updateClient(client);
+      } else {
+        this.volumeAccessories.set(macKey, new VolumeAccessory(this, existing, client));
+      }
+      this.log.debug(`🔄 Updated volume accessory: ${displayName}`);
+    } else {
+      const accessory = new this.api.platformAccessory(displayName, uuid);
+      accessory.context.isVolume = true;
+      accessory.context.client = client;
+
+      const handler = new VolumeAccessory(this, accessory, client);
+      this.volumeAccessories.set(macKey, handler);
+
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+      this.log.info(`➕ Added volume accessory: ${displayName}`);
+    }
+  }
+
+  /**
    * Add a new accessory or update an existing one.
    * @param isDarkWake When true (macOS Power Nap), do not set device to ONLINE.
    */
@@ -773,6 +1097,15 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
     // Remove managed app accessories for this client
     this.removeManagedAppAccessoriesForClient(macKey);
+
+    // Remove volume accessory for this client
+    const volHandler = this.volumeAccessories.get(macKey);
+    if (volHandler) {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [volHandler.accessory]);
+      const idx = this.accessories.indexOf(volHandler.accessory);
+      if (idx >= 0) this.accessories.splice(idx, 1);
+      this.volumeAccessories.delete(macKey);
+    }
   }
 
   /**
@@ -995,6 +1328,39 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   // ──────────────────────────────────────────────
 
   /**
+   * Quick reachability check (2s timeout). Returns true if client responds with 200.
+   * Used to skip WoL when computer is already online.
+   */
+  public quickReachabilityCheck(ip: string, port: number, token?: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const headers: Record<string, string> = {};
+      if (token) headers['X-Auth-Token'] = token;
+
+      const req = http.request(
+        {
+          hostname: ip,
+          port,
+          path: '/health',
+          method: 'GET',
+          timeout: 2000,
+          headers,
+        },
+        (res) => {
+          resolve(res.statusCode === 200);
+        },
+      );
+
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+
+      req.end();
+    });
+  }
+
+  /**
    * Send a Wake-on-LAN magic packet to the given MAC address.
    */
   public sendWakeOnLan(mac: string): Promise<void> {
@@ -1090,6 +1456,66 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
       req.end();
     });
+  }
+
+  /**
+   * Send volume request to a client. GET /volume?level=[0-100]
+   */
+  public sendVolumeRequest(ip: string, port: number, level: number, token?: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const headers: Record<string, string> = {};
+      if (token) headers['X-Auth-Token'] = token;
+
+      const path = `/volume?level=${Math.round(Math.min(100, Math.max(0, level)))}`;
+
+      const req = http.request(
+        {
+          hostname: ip,
+          port,
+          path,
+          method: 'GET',
+          timeout: 5000,
+          headers,
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', () => {
+            try {
+              const data = JSON.parse(body || '{}');
+              resolve(data.success === true);
+            } catch {
+              resolve(res.statusCode === 200);
+            }
+          });
+        },
+      );
+
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+
+      req.end();
+    });
+  }
+
+  /**
+   * Send volume to all clients with Join Master Volume enabled.
+   */
+  public sendVolumeToAllClients(level: number): void {
+    const clients = this.getClientsWithJoinMasterVolume();
+    if (clients.length === 0) {
+      this.log.info('📭 No clients with Join Master Volume enabled');
+      return;
+    }
+    const lvl = Math.round(Math.min(100, Math.max(0, level)));
+    this.log.info(`🔊 Setting volume to ${lvl}% on ${clients.length} device(s)`);
+    for (const client of clients) {
+      client.volume = lvl;
+      this.sendVolumeRequest(client.ip, client.port, lvl, client.token); // fire-and-forget
+    }
   }
 
   /**
@@ -1207,6 +1633,171 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
         this.log.warn(`⚠️ Stay-awake error for ${client.hostname}: ${(err as Error).message}`);
       }
     }
+  }
+
+  /**
+   * Get whether global screensaver switch is enabled.
+   */
+  public getEnableGlobalScreensaverSwitch(): boolean {
+    return !!(this.config.enableGlobalScreensaverSwitch as boolean);
+  }
+
+  /**
+   * Get whether global lock switch is enabled.
+   */
+  public getEnableGlobalLockSwitch(): boolean {
+    return !!(this.config.enableGlobalLockSwitch as boolean);
+  }
+
+  public getEnableGlobalVolumeSwitch(): boolean {
+    return !!(this.config.enableGlobalVolumeSwitch as boolean);
+  }
+
+  public getMasterVolumeName(): string {
+    const name = (this.config.masterVolumeName as string)?.trim();
+    return name || 'Computer Volume';
+  }
+
+  public getClientsWithJoinMasterVolume(): RegisteredClient[] {
+    return this.getClients().filter((c) => c.joinMasterVolume);
+  }
+
+  /**
+   * Send screensaver request to all clients that have screensaverEnabled and are online.
+   */
+  public async sendScreensaverToAllClients(): Promise<void> {
+    const clients = this.getClients().filter((c) => c.screensaverEnabled);
+    if (clients.length === 0) {
+      this.log.info('📭 No clients with Remote Screensaver enabled');
+      return;
+    }
+    for (const client of clients) {
+      try {
+        const reachable = await this.quickReachabilityCheck(client.ip, client.port, client.token);
+        if (!reachable) {
+          this.log.debug(`⏭️ Skipping ${client.hostname} (not reachable)`);
+          continue;
+        }
+        const ok = await this.sendScreensaverRequest(client.ip, client.port, client.token);
+        if (ok) {
+          this.log.debug(`✅ Screensaver sent to ${client.hostname}`);
+        } else {
+          this.log.warn(`⚠️ Screensaver may have failed for ${client.hostname}`);
+        }
+      } catch (err) {
+        this.log.warn(`⚠️ Screensaver error for ${client.hostname}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Send screensaver request to a client.
+   */
+  public sendScreensaverRequest(ip: string, port: number, token?: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const headers: Record<string, string> = {};
+      if (token) headers['X-Auth-Token'] = token;
+
+      const req = http.request(
+        {
+          hostname: ip,
+          port,
+          path: '/screensaver',
+          method: 'GET',
+          timeout: 5000,
+          headers,
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', () => {
+            try {
+              const data = JSON.parse(body || '{}');
+              resolve(data.success === true);
+            } catch {
+              resolve(res.statusCode === 200);
+            }
+          });
+        },
+      );
+
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+
+      req.end();
+    });
+  }
+
+  /**
+   * Send lock request to all clients that have lockEnabled and are online.
+   */
+  public async sendLockToAllClients(): Promise<void> {
+    const clients = this.getClients().filter((c) => c.lockEnabled);
+    if (clients.length === 0) {
+      this.log.info('📭 No clients with Remote Lock enabled');
+      return;
+    }
+    for (const client of clients) {
+      try {
+        const reachable = await this.quickReachabilityCheck(client.ip, client.port, client.token);
+        if (!reachable) {
+          this.log.debug(`⏭️ Skipping ${client.hostname} (not reachable)`);
+          continue;
+        }
+        const ok = await this.sendLockRequest(client.ip, client.port, client.token);
+        if (ok) {
+          this.log.debug(`✅ Lock sent to ${client.hostname}`);
+        } else {
+          this.log.warn(`⚠️ Lock may have failed for ${client.hostname}`);
+        }
+      } catch (err) {
+        this.log.warn(`⚠️ Lock error for ${client.hostname}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Send lock request to a client.
+   */
+  public sendLockRequest(ip: string, port: number, token?: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const headers: Record<string, string> = {};
+      if (token) headers['X-Auth-Token'] = token;
+
+      const req = http.request(
+        {
+          hostname: ip,
+          port,
+          path: '/lock',
+          method: 'GET',
+          timeout: 5000,
+          headers,
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', () => {
+            try {
+              const data = JSON.parse(body || '{}');
+              resolve(data.success === true);
+            } catch {
+              resolve(res.statusCode === 200);
+            }
+          });
+        },
+      );
+
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+
+      req.end();
+    });
   }
 
   /**
