@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"os/exec"
 	"runtime"
@@ -23,13 +24,16 @@ func handleLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("🔒 Lock request received")
+	appendLog("🔒 Lock request received")
+
+	if runtime.GOOS == "darwin" {
+		handleLockDarwin(w, r)
+		return
+	}
+
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
-	case "darwin":
-		// pmset displaysleepnow: turns off display only (computer stays awake).
-		// When "Require password after sleep" is enabled in Security settings, it effectively locks.
-		// No Accessibility permission needed (osascript keystroke requires it and fails from background apps).
-		cmd = exec.Command("pmset", "displaysleepnow")
 	case "windows":
 		cmd = exec.Command("rundll32.exe", "user32.dll,LockWorkStation")
 		prepareCmd(cmd)

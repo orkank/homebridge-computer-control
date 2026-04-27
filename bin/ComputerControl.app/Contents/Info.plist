@@ -21,7 +21,7 @@
 		<string>MacOSX</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>187</string>
+	<string>202</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.</string>
 	<key>LSMinimumSystemVersion</key>

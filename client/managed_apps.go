@@ -18,10 +18,11 @@ const (
 
 // ManagedAppEntry holds a single managed app with wake/sleep options.
 type ManagedAppEntry struct {
-	Name       string `json:"name"`
-	WakeBefore bool   `json:"wakeBefore,omitempty"`
-	SleepAfter bool   `json:"sleepAfter,omitempty"`
-	QuitMode   string `json:"quitMode,omitempty"` // quit, kill, quit_then_kill
+	Name        string `json:"name"`                  // Process name (e.g. firefox.exe) - used for launch/quit and appStates key
+	DisplayName string `json:"displayName,omitempty"` // Optional custom name shown in HomeKit (e.g. "Firefox")
+	WakeBefore  bool   `json:"wakeBefore,omitempty"`
+	SleepAfter  bool   `json:"sleepAfter,omitempty"`
+	QuitMode    string `json:"quitMode,omitempty"` // quit, kill, quit_then_kill
 }
 
 // ManagedAppsConfig holds the persisted managed apps list.

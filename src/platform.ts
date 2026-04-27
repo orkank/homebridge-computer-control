@@ -32,6 +32,9 @@ import {
   ComputerAccessory,
   GroupComputerAccessory,
   AntiSleepAccessory,
+  LockPreventionAccessory,
+  DeviceAntiSleepAccessory,
+  DeviceLockPreventionAccessory,
   ActionAccessory,
   ManagedAppAccessory,
   AllScreensaversAccessory,
@@ -40,6 +43,7 @@ import {
   GlobalVolumeAccessory,
   GROUP_ACCESSORY_UUID,
   ANTI_SLEEP_ACCESSORY_UUID,
+  LOCK_PREVENTION_ACCESSORY_UUID,
   SCREENSAVER_ACCESSORY_UUID,
   LOCK_ACCESSORY_UUID,
   GLOBAL_VOLUME_ACCESSORY_UUID,
@@ -138,10 +142,17 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   private readonly managedAppAccessories: Map<string, ManagedAppAccessory> = new Map(); // key: mac:appName
   private groupAccessory: GroupComputerAccessory | null = null;
   private antiSleepAccessory: AntiSleepAccessory | null = null;
+  private lockPreventionAccessory: LockPreventionAccessory | null = null;
   private screensaverAccessory: AllScreensaversAccessory | null = null;
   private lockAccessory: LockComputersAccessory | null = null;
   private readonly volumeAccessories: Map<string, VolumeAccessory> = new Map(); // key: mac
+  private readonly antiSleepAccessories: Map<string, DeviceAntiSleepAccessory> = new Map(); // per-device when enableAntiSleep
+  private readonly lockPreventionAccessories: Map<string, DeviceLockPreventionAccessory> = new Map(); // per-device when enableLockPrevention
   private globalVolumeAccessory: GlobalVolumeAccessory | null = null;
+  /** Per-device individual Anti-Sleep state (when user toggles device's own switch). */
+  private readonly individualAntiSleepState: Map<string, boolean> = new Map();
+  /** Per-device individual Lock Prevention state. */
+  private readonly individualLockPreventionState: Map<string, boolean> = new Map();
 
   // MAC -> timestamp when we received "going to sleep". Used for 10s debounce.
   private readonly sleepTimestamps: Map<string, number> = new Map();
@@ -449,6 +460,10 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
         const volumeSliderName = (data as { volumeSliderName?: string }).volumeSliderName || '';
         const volume = (data as { volume?: number | null }).volume;
         const volumeVal = typeof volume === 'number' && volume >= 0 && volume <= 100 ? volume : undefined;
+        const enableAntiSleep = !!(data as { enableAntiSleep?: boolean }).enableAntiSleep;
+        const joinAntiSleep = !!(data as { joinAntiSleep?: boolean }).joinAntiSleep;
+        const enableLockPrevention = !!(data as { enableLockPrevention?: boolean }).enableLockPrevention;
+        const joinLockPrevention = !!(data as { joinLockPrevention?: boolean }).joinLockPrevention;
 
         const client: RegisteredClient = {
           hostname: data.hostname || 'Unknown',
@@ -470,6 +485,10 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
           joinMasterVolume,
           volumeSliderName: volumeSliderName || undefined,
           volume: volumeVal,
+          enableAntiSleep,
+          joinAntiSleep,
+          enableLockPrevention,
+          joinLockPrevention,
         };
 
         this.clients.set(macKey, client);
@@ -486,6 +505,17 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
 
         // Add/update/remove volume accessory for this client
         this.addOrUpdateVolumeAccessories(macKey, client);
+
+        // Add/update/remove per-device Anti-Sleep and Lock Prevention
+        this.addOrUpdateDeviceAntiSleepAccessory(macKey, client);
+        this.addOrUpdateDeviceLockPreventionAccessory(macKey, client);
+
+        // Re-evaluate global Anti-Sleep and Lock Prevention (participants may have changed)
+        this.addOrUpdateAntiSleepAccessory();
+        this.addOrUpdateLockPreventionAccessory();
+
+        // Sync stay-awake to all clients (including new one) based on global + individual state
+        this.syncStayAwakeForAllClients();
 
         // Update global volume accessory when any joinMasterVolume client updates
         if (this.globalVolumeAccessory && client.joinMasterVolume) {
@@ -703,8 +733,17 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
     // Add or update the virtual group accessory (Wake All / Sleep All)
     this.addOrUpdateGroupAccessory();
 
-    // Add or update the Anti-Sleep accessory (if configured)
+    // Add or update the Anti-Sleep accessory (if configured and has participants)
     this.addOrUpdateAntiSleepAccessory();
+
+    // Add or update the Lock Prevention accessory (if configured and has participants)
+    this.addOrUpdateLockPreventionAccessory();
+
+    // Add or update per-device Anti-Sleep and Lock Prevention
+    for (const [macKey, client] of this.clients) {
+      this.addOrUpdateDeviceAntiSleepAccessory(macKey, client);
+      this.addOrUpdateDeviceLockPreventionAccessory(macKey, client);
+    }
 
     // Add or update the All Screensavers accessory (if configured)
     this.addOrUpdateScreensaverAccessory();
@@ -739,13 +778,22 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
     }
     const groupUUID = this.api.hap.uuid.generate(GROUP_ACCESSORY_UUID);
     const antiSleepUUID = this.api.hap.uuid.generate(ANTI_SLEEP_ACCESSORY_UUID);
+    const lockPreventionUUID = this.api.hap.uuid.generate(LOCK_PREVENTION_ACCESSORY_UUID);
     const screensaverUUID = this.api.hap.uuid.generate(SCREENSAVER_ACCESSORY_UUID);
     const lockUUID = this.api.hap.uuid.generate(LOCK_ACCESSORY_UUID);
     const globalVolumeUUID = this.api.hap.uuid.generate(GLOBAL_VOLUME_ACCESSORY_UUID);
     const volumeUUIDs = new Set<string>();
+    const antiSleepDeviceUUIDs = new Set<string>();
+    const lockPreventionDeviceUUIDs = new Set<string>();
     for (const [macKey, client] of this.clients) {
       if (client.enableVolumeSlider) {
         volumeUUIDs.add(this.api.hap.uuid.generate(`volume-${macKey}`));
+      }
+      if (client.enableAntiSleep) {
+        antiSleepDeviceUUIDs.add(this.api.hap.uuid.generate(`anti-sleep-${macKey}`));
+      }
+      if (client.enableLockPrevention) {
+        lockPreventionDeviceUUIDs.add(this.api.hap.uuid.generate(`lock-prevention-${macKey}`));
       }
     }
 
@@ -753,13 +801,16 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       (acc) =>
         acc.UUID !== groupUUID &&
         acc.UUID !== antiSleepUUID &&
+        acc.UUID !== lockPreventionUUID &&
         acc.UUID !== screensaverUUID &&
         acc.UUID !== lockUUID &&
         acc.UUID !== globalVolumeUUID &&
         !clientUUIDs.has(acc.UUID) &&
         !actionUUIDs.has(acc.UUID) &&
         !managedAppUUIDs.has(acc.UUID) &&
-        !volumeUUIDs.has(acc.UUID),
+        !volumeUUIDs.has(acc.UUID) &&
+        !antiSleepDeviceUUIDs.has(acc.UUID) &&
+        !lockPreventionDeviceUUIDs.has(acc.UUID),
     );
 
     if (accessoriesToRemove.length > 0) {
@@ -802,20 +853,23 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * Add or update the Anti-Sleep accessory (prevents all computers from sleeping).
-   * Only created if antiSleepDeviceName is non-empty.
+   * Add or update the Anti-Sleep accessory (prevents computers from sleeping).
+   * Only created if enableGlobalAntiSleepSwitch and antiSleepDeviceName, and at least one client has joinAntiSleep.
    */
   private addOrUpdateAntiSleepAccessory(): void {
     const displayName = (this.config.antiSleepDeviceName as string)?.trim();
+    // Backwards compat: if enableGlobalAntiSleepSwitch not set but name is, treat as enabled
+    const enabled = (this.config.enableGlobalAntiSleepSwitch as boolean) ?? !!displayName;
+    const hasParticipants = this.getClients().some((c) => c.joinAntiSleep);
     const uuid = this.api.hap.uuid.generate(ANTI_SLEEP_ACCESSORY_UUID);
     const existing = this.accessories.find((acc) => acc.UUID === uuid);
 
-    if (!displayName) {
+    if (!displayName || !enabled || !hasParticipants) {
       if (existing) {
         this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existing]);
         this.accessories.splice(this.accessories.indexOf(existing), 1);
         this.antiSleepAccessory = null;
-        this.log.info('🗑️  Anti-Sleep accessory removed (name empty)');
+        this.log.info('🗑️  Anti-Sleep accessory removed');
       }
       return;
     }
@@ -842,6 +896,134 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
       this.log.info(`➕ Added Anti-Sleep accessory: ${displayName}`);
+    }
+  }
+
+  /**
+   * Add or update the Lock Prevention accessory (prevents screen dim/lock).
+   * Only created if enableGlobalLockPreventionSwitch and at least one client has joinLockPrevention.
+   */
+  private addOrUpdateLockPreventionAccessory(): void {
+    const displayName = ((this.config.lockPreventionDeviceName as string)?.trim()) || 'Lock Prevention';
+    const enabled = !!(this.config.enableGlobalLockPreventionSwitch as boolean);
+    const hasParticipants = this.getClients().some((c) => c.joinLockPrevention);
+    const uuid = this.api.hap.uuid.generate(LOCK_PREVENTION_ACCESSORY_UUID);
+    const existing = this.accessories.find((acc) => acc.UUID === uuid);
+
+    if (!enabled || !hasParticipants) {
+      if (existing) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existing]);
+        this.accessories.splice(this.accessories.indexOf(existing), 1);
+        this.lockPreventionAccessory = null;
+        this.log.info('🗑️  Lock Prevention accessory removed');
+      }
+      return;
+    }
+
+    if (existing) {
+      existing.updateDisplayName(displayName);
+      const infoService = existing.getService(this.Service.AccessoryInformation);
+      if (infoService) {
+        infoService.updateCharacteristic(this.Characteristic.Name, displayName);
+      }
+      this.api.updatePlatformAccessories([existing]);
+
+      if (this.lockPreventionAccessory) {
+        this.lockPreventionAccessory.updateDisplayName(displayName);
+      } else {
+        this.lockPreventionAccessory = new LockPreventionAccessory(this, existing, displayName);
+      }
+      this.log.debug(`🔄 Updated Lock Prevention accessory: ${displayName}`);
+    } else {
+      const accessory = new this.api.platformAccessory(displayName, uuid);
+      accessory.context.isLockPrevention = true;
+
+      this.lockPreventionAccessory = new LockPreventionAccessory(this, accessory, displayName);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+      this.log.info(`➕ Added Lock Prevention accessory: ${displayName}`);
+    }
+  }
+
+  /**
+   * Add or update per-device Anti-Sleep accessory (when client has enableAntiSleep).
+   */
+  private addOrUpdateDeviceAntiSleepAccessory(macKey: string, client: RegisteredClient): void {
+    if (!client.enableAntiSleep) {
+      const uuid = this.api.hap.uuid.generate(`anti-sleep-${macKey}`);
+      const existing = this.accessories.find((acc) => acc.UUID === uuid);
+      if (existing) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existing]);
+        this.accessories.splice(this.accessories.indexOf(existing), 1);
+        this.antiSleepAccessories.delete(macKey);
+      }
+      return;
+    }
+
+    const displayName = `${client.displayName || client.hostname} - Anti-Sleep`;
+    const uuid = this.api.hap.uuid.generate(`anti-sleep-${macKey}`);
+    const existing = this.accessories.find((acc) => acc.UUID === uuid);
+
+    if (existing) {
+      existing.updateDisplayName(displayName);
+      this.api.updatePlatformAccessories([existing]);
+      const handler = this.antiSleepAccessories.get(macKey);
+      if (handler) {
+        handler.updateDisplayName(displayName);
+      } else {
+        this.antiSleepAccessories.set(macKey, new DeviceAntiSleepAccessory(this, existing, macKey, displayName));
+      }
+    } else {
+      const accessory = new this.api.platformAccessory(displayName, uuid);
+      accessory.context.macKey = macKey;
+      accessory.context.isDeviceAntiSleep = true;
+
+      const handler = new DeviceAntiSleepAccessory(this, accessory, macKey, displayName);
+      this.antiSleepAccessories.set(macKey, handler);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+      this.log.info(`➕ Added Anti-Sleep for ${client.hostname}`);
+    }
+  }
+
+  /**
+   * Add or update per-device Lock Prevention accessory (when client has enableLockPrevention).
+   */
+  private addOrUpdateDeviceLockPreventionAccessory(macKey: string, client: RegisteredClient): void {
+    if (!client.enableLockPrevention) {
+      const uuid = this.api.hap.uuid.generate(`lock-prevention-${macKey}`);
+      const existing = this.accessories.find((acc) => acc.UUID === uuid);
+      if (existing) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existing]);
+        this.accessories.splice(this.accessories.indexOf(existing), 1);
+        this.lockPreventionAccessories.delete(macKey);
+      }
+      return;
+    }
+
+    const displayName = `${client.displayName || client.hostname} - Lock Prevention`;
+    const uuid = this.api.hap.uuid.generate(`lock-prevention-${macKey}`);
+    const existing = this.accessories.find((acc) => acc.UUID === uuid);
+
+    if (existing) {
+      existing.updateDisplayName(displayName);
+      this.api.updatePlatformAccessories([existing]);
+      const handler = this.lockPreventionAccessories.get(macKey);
+      if (handler) {
+        handler.updateDisplayName(displayName);
+      } else {
+        this.lockPreventionAccessories.set(macKey, new DeviceLockPreventionAccessory(this, existing, macKey, displayName));
+      }
+    } else {
+      const accessory = new this.api.platformAccessory(displayName, uuid);
+      accessory.context.macKey = macKey;
+      accessory.context.isDeviceLockPrevention = true;
+
+      const handler = new DeviceLockPreventionAccessory(this, accessory, macKey, displayName);
+      this.lockPreventionAccessories.set(macKey, handler);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+      this.log.info(`➕ Added Lock Prevention for ${client.hostname}`);
     }
   }
 
@@ -1207,7 +1389,8 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
       if (!appName) continue;
       const key = `${macKey}:${appName}`;
       const uuid = this.api.hap.uuid.generate(`managed-app-${macKey}-${appName}`);
-      const displayName = appName;
+      const appConfig = client.managedApps?.find((a) => a.name.toLowerCase() === appName.toLowerCase());
+      const displayName = (appConfig?.displayName && appConfig.displayName.trim()) || appName;
       const existing = this.accessories.find((acc) => acc.UUID === uuid);
 
       if (existing) {
@@ -1221,7 +1404,7 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
         if (this.managedAppAccessories.has(key)) {
           this.managedAppAccessories.get(key)!.updateClient(client);
         } else {
-          this.managedAppAccessories.set(key, new ManagedAppAccessory(this, existing, client, appName));
+          this.managedAppAccessories.set(key, new ManagedAppAccessory(this, existing, client, appName, displayName));
         }
       } else {
         const accessory = new this.api.platformAccessory(displayName, uuid);
@@ -1229,7 +1412,7 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
         accessory.context.client = client;
         accessory.context.appName = appName;
 
-        const handler = new ManagedAppAccessory(this, accessory, client, appName);
+        const handler = new ManagedAppAccessory(this, accessory, client, appName, displayName);
         this.managedAppAccessories.set(key, handler);
 
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
@@ -1617,11 +1800,34 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * Send stay-awake (enabled/disabled) to all registered clients.
+   * Compute whether a client should have stay-awake enabled based on:
+   * - Global Anti-Sleep ON + client.joinAntiSleep
+   * - Global Lock Prevention ON + client.joinLockPrevention
+   * - Individual Anti-Sleep ON for this device
+   * - Individual Lock Prevention ON for this device
    */
-  public async sendStayAwakeToAllClients(enabled: boolean): Promise<void> {
+  public shouldClientStayAwake(macKey: string): boolean {
+    const client = this.clients.get(macKey);
+    if (!client) return false;
+
+    const globalAntiSleepOn = this.antiSleepAccessory?.getState?.() ?? false;
+    const globalLockPrevOn = this.lockPreventionAccessory?.getState?.() ?? false;
+
+    if (globalLockPrevOn && client.joinLockPrevention) return true;
+    if (globalAntiSleepOn && client.joinAntiSleep) return true;
+    if (this.individualLockPreventionState.get(macKey)) return true;
+    if (this.individualAntiSleepState.get(macKey)) return true;
+    return false;
+  }
+
+  /**
+   * Sync stay-awake to all clients based on combined Anti-Sleep + Lock Prevention state.
+   */
+  public async syncStayAwakeForAllClients(): Promise<void> {
     const clients = this.getClients();
     for (const client of clients) {
+      const macKey = client.mac.toUpperCase();
+      const enabled = this.shouldClientStayAwake(macKey);
       try {
         const ok = await this.sendStayAwakeRequest(client.ip, client.port, client.token, enabled);
         if (ok) {
@@ -1633,6 +1839,22 @@ export class ComputerControlPlatform implements DynamicPlatformPlugin {
         this.log.warn(`⚠️ Stay-awake error for ${client.hostname}: ${(err as Error).message}`);
       }
     }
+  }
+
+  public getIndividualAntiSleepState(macKey: string): boolean {
+    return this.individualAntiSleepState.get(macKey) ?? false;
+  }
+
+  public setIndividualAntiSleepState(macKey: string, on: boolean): void {
+    this.individualAntiSleepState.set(macKey, on);
+  }
+
+  public getIndividualLockPreventionState(macKey: string): boolean {
+    return this.individualLockPreventionState.get(macKey) ?? false;
+  }
+
+  public setIndividualLockPreventionState(macKey: string, on: boolean): void {
+    this.individualLockPreventionState.set(macKey, on);
   }
 
   /**

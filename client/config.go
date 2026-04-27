@@ -11,12 +11,17 @@ import (
 
 // ClientConfig holds persisted client preferences.
 type ClientConfig struct {
-	SendTemperature         bool   `json:"sendTemperature"`
-	EnableRemoteScreensaver bool   `json:"enableRemoteScreensaver"`
-	EnableRemoteLock        bool   `json:"enableRemoteLock"`
-	EnableVolumeSlider      bool   `json:"enableVolumeSlider"`
-	JoinMasterVolume        bool   `json:"joinMasterVolume"`
-	VolumeSliderName        string `json:"volumeSliderName"` // default: [Hostname] - Volume
+	SendTemperature          bool   `json:"sendTemperature"`
+	EnableRemoteScreensaver   bool   `json:"enableRemoteScreensaver"`
+	EnableRemoteLock          bool   `json:"enableRemoteLock"`
+	EnableVolumeSlider        bool   `json:"enableVolumeSlider"`
+	JoinMasterVolume          bool   `json:"joinMasterVolume"`
+	VolumeSliderName          string `json:"volumeSliderName"` // default: [Hostname] - Volume
+	EnableAntiSleep           bool   `json:"enableAntiSleep"`           // individual anti-sleep switch
+	JoinAntiSleep             bool   `json:"joinAntiSleep"`             // join global anti-sleep (mutual excl with EnableAntiSleep)
+	EnableLockPrevention      bool   `json:"enableLockPrevention"`      // individual lock prevention
+	JoinLockPrevention        bool   `json:"joinLockPrevention"`        // join global lock prevention (mutual excl with EnableLockPrevention)
+	HeartbeatIntervalSec      int    `json:"heartbeatIntervalSec"`      // default: 30
 }
 
 var (
@@ -67,13 +72,22 @@ func loadClientConfig() ClientConfig {
 		if !os.IsNotExist(err) {
 			log.Printf("⚠️  Failed to read client_config: %v", err)
 		}
-		return ClientConfig{SendTemperature: false, EnableRemoteScreensaver: false, EnableRemoteLock: false, EnableVolumeSlider: false, JoinMasterVolume: false}
+		return ClientConfig{SendTemperature: false, EnableRemoteScreensaver: false, EnableRemoteLock: false, EnableVolumeSlider: false, JoinMasterVolume: false, EnableAntiSleep: false, JoinAntiSleep: false, EnableLockPrevention: false, JoinLockPrevention: false, HeartbeatIntervalSec: 30}
 	}
 
 	var c ClientConfig
 	if err := json.Unmarshal(data, &c); err != nil {
 		log.Printf("⚠️  Failed to parse client_config: %v", err)
-		return ClientConfig{SendTemperature: false, EnableRemoteScreensaver: false, EnableRemoteLock: false, EnableVolumeSlider: false, JoinMasterVolume: false}
+		return ClientConfig{SendTemperature: false, EnableRemoteScreensaver: false, EnableRemoteLock: false, EnableVolumeSlider: false, JoinMasterVolume: false, EnableAntiSleep: false, JoinAntiSleep: false, EnableLockPrevention: false, JoinLockPrevention: false, HeartbeatIntervalSec: 30}
+	}
+	if c.HeartbeatIntervalSec <= 0 {
+		c.HeartbeatIntervalSec = 30
+	}
+	if c.HeartbeatIntervalSec < 5 {
+		c.HeartbeatIntervalSec = 5
+	}
+	if c.HeartbeatIntervalSec > 300 {
+		c.HeartbeatIntervalSec = 300
 	}
 	return c
 }
@@ -114,6 +128,7 @@ func setSendTemperature(enabled bool) {
 	c := config
 	configMu.Unlock()
 	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
 }
 
 // getEnableRemoteScreensaver returns whether remote screensaver is enabled.
@@ -130,6 +145,7 @@ func setEnableRemoteScreensaver(enabled bool) {
 	c := config
 	configMu.Unlock()
 	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
 }
 
 // getEnableRemoteLock returns whether remote lock is enabled.
@@ -146,6 +162,7 @@ func setEnableRemoteLock(enabled bool) {
 	c := config
 	configMu.Unlock()
 	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
 }
 
 // getEnableVolumeSlider returns whether volume slider is enabled.
@@ -166,6 +183,7 @@ func setEnableVolumeSlider(enabled bool) {
 	c := config
 	configMu.Unlock()
 	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
 }
 
 // getJoinMasterVolume returns whether to join master volume group.
@@ -186,6 +204,7 @@ func setJoinMasterVolume(enabled bool) {
 	c := config
 	configMu.Unlock()
 	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
 }
 
 // getVolumeSliderName returns the display name for this device's volume slider.
@@ -202,6 +221,117 @@ func setVolumeSliderName(name string) {
 	c := config
 	configMu.Unlock()
 	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
+}
+
+// getEnableAntiSleep returns whether individual anti-sleep is enabled.
+func getEnableAntiSleep() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.EnableAntiSleep
+}
+
+// setEnableAntiSleep updates the preference. When enabled, JoinAntiSleep is disabled (mutual exclusion).
+func setEnableAntiSleep(enabled bool) {
+	configMu.Lock()
+	config.EnableAntiSleep = enabled
+	if enabled {
+		config.JoinAntiSleep = false
+	}
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
+}
+
+// getJoinAntiSleep returns whether to join global anti-sleep.
+func getJoinAntiSleep() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.JoinAntiSleep
+}
+
+// setJoinAntiSleep updates the preference. When enabled, EnableAntiSleep is disabled (mutual exclusion).
+func setJoinAntiSleep(enabled bool) {
+	configMu.Lock()
+	config.JoinAntiSleep = enabled
+	if enabled {
+		config.EnableAntiSleep = false
+	}
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
+}
+
+// getEnableLockPrevention returns whether individual lock prevention is enabled.
+func getEnableLockPrevention() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.EnableLockPrevention
+}
+
+// setEnableLockPrevention updates the preference. When enabled, JoinLockPrevention is disabled (mutual exclusion).
+func setEnableLockPrevention(enabled bool) {
+	configMu.Lock()
+	config.EnableLockPrevention = enabled
+	if enabled {
+		config.JoinLockPrevention = false
+	}
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
+}
+
+// getJoinLockPrevention returns whether to join global lock prevention.
+func getJoinLockPrevention() bool {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config.JoinLockPrevention
+}
+
+// setJoinLockPrevention updates the preference. When enabled, EnableLockPrevention is disabled (mutual exclusion).
+func setJoinLockPrevention(enabled bool) {
+	configMu.Lock()
+	config.JoinLockPrevention = enabled
+	if enabled {
+		config.EnableLockPrevention = false
+	}
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
+}
+
+// getHeartbeatIntervalSec returns heartbeat interval in seconds (5-300).
+func getHeartbeatIntervalSec() int {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	v := config.HeartbeatIntervalSec
+	if v < 5 {
+		return 5
+	}
+	if v > 300 {
+		return 300
+	}
+	return v
+}
+
+// setHeartbeatIntervalSec updates the preference and persists it.
+func setHeartbeatIntervalSec(sec int) {
+	if sec < 5 {
+		sec = 5
+	}
+	if sec > 300 {
+		sec = 300
+	}
+	configMu.Lock()
+	config.HeartbeatIntervalSec = sec
+	c := config
+	configMu.Unlock()
+	saveClientConfig(c)
+	TriggerImmediateHeartbeat()
 }
 
 // initClientConfig loads config at startup. Call from main.

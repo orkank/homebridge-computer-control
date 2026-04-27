@@ -18,11 +18,11 @@
   <img src="client4.png" alt="Client app" width="400">
 </p>
 
-> ⚠️ **Test version** - This plugin is still in testing.
+> ✅ **Ready for use** - This plugin is production-ready.
 
 Control your computers (macOS, Windows, Linux) through Apple HomeKit using Homebridge. Wake them with WoL, put them to sleep remotely, and manage them as HomeKit switches.
 
-**Version:** 1.1.7
+**Version:** 1.1.9
 
 ### 📱 Managed Apps - Live Application Monitoring (Real-State) *(1.1.6)*
 
@@ -86,7 +86,7 @@ Lock the screen on all computers from a single HomeKit switch. **Does not put co
 | **HomeKit** | "Lock Computers" switch appears; tap ON → lock screen on all online enabled clients |
 | **Online only** | Same as Screensaver - only reachable clients receive the command |
 
-macOS: `pmset displaysleepnow` (display off only; computer stays awake; requires "Require password after sleep" in Security for lock). Windows: `rundll32 user32.dll,LockWorkStation`. Linux: `xdg-screensaver lock` (fallback: xscreensaver-command -lock).
+macOS: osascript (Lock shortcut or Finder menu; Accessibility may be required), then `pmset displaysleepnow` fallback. Windows: `rundll32 user32.dll,LockWorkStation`. Linux: `xdg-screensaver lock` (fallback: xscreensaver-command -lock).
 
 ### 🎯 Custom Actions - One-Tap HomeKit Accessories
 
@@ -122,7 +122,8 @@ Define actions in the client **Actions** tab; they appear instantly as switches 
 | **macOS Power Nap** | Correctly detects Dark Wake; device stays OFF when display is asleep |
 | **Token Auth** | Client and plugin use shared tokens; no unauthorized sleep/wake |
 | **Config UI** | View clients, remove stale ones, configure group name |
-| **Anti-Sleep** | Virtual switch to prevent all computers from sleeping (configurable name + optional timer) |
+| **Anti-Sleep** | Virtual switch to prevent computers from sleeping. Client: Join Anti-Sleep (global) or Enable Anti-Sleep (individual). Plugin: Enable Global Anti-Sleep. Optional timer. Same rules as Volume (mutual exclusion) |
+| **Lock Prevention** | Virtual switch to prevent screen dimming and lock screen. Client: Join Lock Prevention (global) or Enable Lock Prevention (individual). Plugin: Enable Global Lock Prevention. Uses same stay-awake mechanism as Anti-Sleep |
 | **Temperature Sensor** | Optional CPU temperature in HomeKit (client checkbox "Send Temperature Data"); Linux thermal/sensors, macOS ioreg, Windows WMI |
 | **Custom Actions** | Define BTT, shell, batch, AppleScript, or URL actions in the client; they appear as switches or buttons in HomeKit |
 | **Managed Apps** | Live app monitoring - add process names in client; each becomes a real-state switch (ON = running, OFF = not running). Standard/Force/Smart Quit; optional Wake Before Launch / Sleep After Quit; skip WoL when computer already online |
@@ -294,7 +295,50 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 
 ## Changelog
 
-### 1.1.7 (Current)
+### 1.1.9 (Current)
+
+- **macOS Dark Wake / health checks**: Fixed repeated `pmset -g log` subprocesses on Apple Silicon
+  - Many Macs no longer expose "Display Asleep" lines in `system_profiler`; the old fallback spawned `pmset` on every `/health` poll, heartbeat, and volume poll
+  - Display probe no longer uses `pmset -g log`; results are cached briefly (~3s) to reduce duplicate work
+  - When display state is unknown, the client assumes full wake (not dark wake) instead of shelling out to `pmset`
+- **macOS Remote Lock**: More reliable lock screen from HomeKit
+  - Tries osascript (default Lock shortcut; may require **Accessibility** for Computer Control), then Finder **Lock Screen** menu, then `pmset displaysleepnow` fallback
+  - Request logging in the client UI
+- **macOS Remote Screensaver**: Multiple launch methods for newer macOS (Sonoma+)
+  - `open -a ScreenSaverEngine`, full `.app` path, bundle ID `com.apple.ScreenSaver.Engine`, and direct binary as fallbacks
+- **Client settings**: Configurable **heartbeat interval** (5–300 seconds, default 30) in Settings
+- **Client**: Immediate heartbeat after toggling temperature, remote screensaver, remote lock, volume, anti-sleep, and lock-prevention preferences (faster HomeKit sync)
+- **Managed Apps**: Optional **display name** per app for the HomeKit accessory title (process name remains the control key)
+- **Plugin**: After client registration, **stay-awake state is synced** across clients so global and per-device Anti-Sleep / Lock Prevention stay consistent when the roster changes
+- **Windows Anti-Sleep**: Improved reliability on Windows 11
+  - Added `ES_DISPLAY_REQUIRED` (prevents both system and display sleep)
+  - Periodic refresh every 60 seconds (Windows 11 can clear `SetThreadExecutionState`; refresh maintains the state)
+  - Aligns with PowerToys Awake approach
+- **Anti-Sleep Auto-Off**: Safety timeout when client cannot reach server
+  - If client has no successful connection to server for 10 minutes, client turns off anti-sleep locally
+  - Prevents devices from staying awake indefinitely when server/network is down
+  - Applies only when plugin URL is configured and heartbeats are being sent
+- **Lock Prevention**: New feature to prevent screen dimming and lock screen
+  - Global virtual accessory (only shown when clients with Join Lock Prevention exist)
+  - Client Settings: "Enable Lock Prevention (individual)" or "Join Lock Prevention (global)" — mutual exclusion like Volume
+  - Plugin config: "Enable Global Lock Prevention" + Lock Prevention Device Name
+  - Uses same stay-awake mechanism as Anti-Sleep
+  - Client dashboard: Lock Prevention status indicator (Active/Off)
+- **Anti-Sleep**: Refactored to Join/Individual pattern (same as Volume)
+  - Client Settings: "Enable Anti-Sleep (individual)" or "Join Anti-Sleep (global)" — mutual exclusion
+  - Plugin config: "Enable Global Anti-Sleep" — accessory only shown when participants exist
+  - Per-device Anti-Sleep switch when individual mode enabled
+- **Windows Screensaver**: Use user-configured screensaver from registry
+  - Reads `HKCU\Control Panel\Desktop\SCRNSAVE.EXE` for user's selected screensaver
+  - Falls back to `scrnsave.scr` if none configured or path invalid
+  - Fixes issue where only screen dimmed instead of actual screensaver (e.g. Photos, Bubbles)
+- **Production-ready**: README marks the plugin as production-ready (no "test version" banner)
+
+### 1.1.8
+
+- _No separate npm release; changes rolled into 1.1.9._
+
+### 1.1.7
 
 - **Volume Control**: System volume from HomeKit (Lightbulb/Brightness slider)
   - Individual slider: Client "Enable Volume Slider" → each device gets its own volume accessory
@@ -305,12 +349,12 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
   - Client Settings: Volume Slider Name (default: `[Hostname] - Volume`)
 - **Screensaver Sync**: Start screensaver on all computers from HomeKit
   - Client Settings: "Enable Remote Screensaver" checkbox
-  - Client `/screensaver` endpoint: macOS `ScreenSaverEngine`, Windows `scrnsave.scr /s`, Linux `xdg-screensaver activate` (fallback: xscreensaver-command)
+  - Client `/screensaver` endpoint: macOS `ScreenSaverEngine` (several `open`/path/bundle fallbacks), Windows user `.scr` from registry, Linux `xdg-screensaver activate` (fallback: xscreensaver-command)
   - Plugin config: "Enable Global Screensaver Switch" → creates "All Screensavers" in HomeKit
   - Push button: ON sends to all online clients with screensaver enabled; auto-resets to OFF after 1.5s
 - **Lock Computers**: Lock screen on all computers from HomeKit (does NOT put to sleep)
   - Client Settings: "Enable Remote Lock" checkbox
-  - Client `/lock` endpoint: macOS `pmset displaysleepnow`, Windows `rundll32 user32.dll,LockWorkStation`, Linux `xdg-screensaver lock`
+  - Client `/lock` endpoint: macOS osascript / Finder / `pmset displaysleepnow` fallback; Windows `rundll32 user32.dll,LockWorkStation`; Linux `xdg-screensaver lock`
   - Plugin config: "Enable Global Lock Switch" → creates "Lock Computers" in HomeKit
   - Push button: ON sends to all online clients with lock enabled; auto-resets to OFF after 1.5s
 - **Managed Apps**: Quit mode names - Standard Quit (Graceful), Force Quit (Immediate), Smart Quit (Wait then Kill)
@@ -386,7 +430,7 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 | Feature | Details |
 |---|---|
 | **Auto-Detection** | IP, MAC address, hostname detected on startup |
-| **Heartbeat** | Sends registration every 30 seconds |
+| **Heartbeat** | Sends registration on an interval (default 30s; configurable 5–300s in client Settings) |
 | **Sleep (macOS)** | `pmset sleepnow` (osascript fallback) |
 | **Sleep (Windows)** | `rundll32.exe powrprof.dll,SetSuspendState 0,1,0` |
 | **Sleep (Linux)** | `systemctl suspend` |
@@ -399,6 +443,8 @@ computer-control-windows-amd64.exe --plugin-url http://<homebridge-ip>:9090
 | **Remote Screensaver** | Settings checkbox "Enable Remote Screensaver"; when enabled, client responds to `/screensaver` and advertises `screensaverEnabled` in heartbeat |
 | **Remote Lock** | Settings checkbox "Enable Remote Lock"; when enabled, client responds to `/lock` and advertises `lockEnabled` in heartbeat |
 | **Volume Control** | "Enable Volume Slider" (individual) or "Join Master Volume" (group); mutually exclusive. Volume Slider Name for individual. Polls volume every 2s when in master group; notifies plugin on local change |
+| **Anti-Sleep** | "Enable Anti-Sleep (individual)" or "Join Anti-Sleep (global)"; mutually exclusive. Same pattern as Volume. Client `/stay-awake` endpoint; macOS: caffeinate -i, Windows: SetThreadExecutionState, Linux: systemd-inhibit |
+| **Lock Prevention** | "Enable Lock Prevention (individual)" or "Join Lock Prevention (global)"; mutually exclusive. Prevents screen dim and lock. Uses same stay-awake mechanism as Anti-Sleep |
 
 ### Temperature Sensor (Optional)
 
@@ -460,22 +506,12 @@ All client endpoints require `X-Auth-Token` header (issued by plugin on registra
 | `GET` | `/status` | Hostname, uptime, display state |
 | `POST` | `/sleep` | Put computer to sleep |
 | `POST` | `/wake-screen` | Force display wake (macOS: caffeinate + key + brightness) |
-| `GET` | `/stay-awake?enabled=true\|false` | Enable/disable system sleep prevention (Anti-Sleep) |
+| `GET` | `/stay-awake?enabled=true\|false` | Enable/disable system sleep prevention (Anti-Sleep + Lock Prevention) |
 | `GET` | `/run-action?name=X&state=on\|off` | Execute a named action (BTT, shell, batch, AppleScript, URL) |
 | `GET` | `/manage-app?name=X&target=on\|off` | Launch app (target=on) or quit/kill (target=off) based on app's QuitMode |
 | `GET` | `/screensaver` | Start screensaver (requires Enable Remote Screensaver in client) |
 | `GET` | `/lock` | Lock screen (requires Enable Remote Lock in client; does not sleep) |
 | `GET` | `/volume` | Get current volume (no params) or set volume (`?level=0-100`; requires Enable Volume Slider or Join Master Volume) |
-
-## Publishing (Maintainers)
-
-```bash
-# 1. Build plugin + client binaries (bin/ required for download server)
-npm run build:all
-
-# 2. Publish to npm
-npm publish
-```
 
 ## License
 MIT

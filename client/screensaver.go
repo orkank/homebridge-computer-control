@@ -1,14 +1,18 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"os/exec"
 	"runtime"
 )
 
+// handleScreensaverDarwinFunc is set by screensaver_darwin.go on darwin; no-op otherwise.
+var handleScreensaverDarwinFunc = func(http.ResponseWriter, *http.Request) {}
+
 // handleScreensaver starts the screensaver. Requires Enable Remote Screensaver to be enabled.
-// macOS: open -a ScreenSaverEngine
-// Windows: run default .scr (scrnsave.scr /s)
+// macOS: open ScreenSaverEngine.app (multiple fallbacks)
+// Windows: user-configured .scr from registry
 // Linux: xdg-screensaver activate (fallback: xscreensaver-command -activate)
 func handleScreensaver(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -23,14 +27,19 @@ func handleScreensaver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("🖼️ Screensaver request received")
+	appendLog("🖼️ Screensaver request received")
+
+	if runtime.GOOS == "darwin" {
+		handleScreensaverDarwinFunc(w, r)
+		return
+	}
+
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", "-a", "ScreenSaverEngine")
 	case "windows":
-		// scrnsave.scr /s starts the default screensaver in fullscreen
-		cmd = exec.Command("cmd", "/c", "C:\\Windows\\System32\\scrnsave.scr", "/s")
-		prepareCmd(cmd)
+		// Use user-configured screensaver from registry (HKCU\Control Panel\Desktop\SCRNSAVE.EXE)
+		cmd = startWindowsScreensaver()
 	case "linux":
 		// xdg-screensaver is desktop-agnostic (GNOME, KDE, etc.)
 		cmd = exec.Command("xdg-screensaver", "activate")

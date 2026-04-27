@@ -67,6 +67,14 @@ export interface RegisteredClient {
   volumeSliderName?: string;
   /** Current volume level 0-100 from heartbeat (for status sync). */
   volume?: number | null;
+  /** Client has Enable Anti-Sleep (individual) checked. */
+  enableAntiSleep?: boolean;
+  /** Client has Join Anti-Sleep (global) checked. */
+  joinAntiSleep?: boolean;
+  /** Client has Enable Lock Prevention (individual) checked. */
+  enableLockPrevention?: boolean;
+  /** Client has Join Lock Prevention (global) checked. */
+  joinLockPrevention?: boolean;
 }
 
 /**
@@ -88,6 +96,7 @@ export interface ClientAction {
  */
 export interface ClientManagedApp {
   name: string;
+  displayName?: string; // Optional custom name shown in HomeKit (e.g. "Firefox" instead of "firefox.exe")
   wakeBefore?: boolean;
   sleepAfter?: boolean;
 }
@@ -107,4 +116,10 @@ export interface ComputerControlConfig {
   enableGlobalVolumeSwitch?: boolean;
   /** Display name for the Global Volume accessory (default: Computer Volume). */
   masterVolumeName?: string;
+  /** Enable Global Anti-Sleep accessory. Only shown when clients with Join Anti-Sleep exist. */
+  enableGlobalAntiSleepSwitch?: boolean;
+  /** Enable Global Lock Prevention accessory. Only shown when clients with Join Lock Prevention exist. */
+  enableGlobalLockPreventionSwitch?: boolean;
+  /** Display name for the Lock Prevention accessory (default: Lock Prevention). */
+  lockPreventionDeviceName?: string;
 }

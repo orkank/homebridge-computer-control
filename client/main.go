@@ -31,9 +31,10 @@ var (
 	startTime     time.Time
 
 	// Mutable labels updated from background goroutines
-	statusDot     *statusDotWidget
-	ipLabel       *widget.Label
-	stayAwakeLabel *widget.Label
+	statusDot         *statusDotWidget
+	ipLabel           *widget.Label
+	stayAwakeLabel    *widget.Label
+	lockPreventionLabel *widget.Label
 	// onStayAwakeStateChanged is set by buildMainUI; stayawake_*.go calls it when state changes
 	onStayAwakeStateChanged func(bool)
 	// refreshLogView is set by buildMainUI; logbuf.go calls it when new log entries arrive

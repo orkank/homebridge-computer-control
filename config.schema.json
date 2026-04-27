@@ -13,6 +13,9 @@
       "groupAccessoryName": "Computers",
       "antiSleepDeviceName": "Computer Sleep Prevention",
       "antiSleepTimer": 0,
+      "enableGlobalAntiSleepSwitch": false,
+      "enableGlobalLockPreventionSwitch": false,
+      "lockPreventionDeviceName": "Lock Prevention",
       "enableGlobalScreensaverSwitch": false,
       "enableGlobalLockSwitch": false,
       "enableGlobalVolumeSwitch": false,
@@ -53,6 +56,24 @@
         "minimum": 0,
         "maximum": 1440,
         "description": "Auto-turn-off delay in minutes. 0 = unlimited (stays on until manually turned off)."
+      },
+      "enableGlobalAntiSleepSwitch": {
+        "title": "Enable Global Anti-Sleep",
+        "type": "boolean",
+        "default": false,
+        "description": "When enabled, creates a virtual switch that prevents computers from sleeping. Only shown when at least one client has 'Join Anti-Sleep (global)' enabled. Clients choose either individual or global (mutual exclusion)."
+      },
+      "enableGlobalLockPreventionSwitch": {
+        "title": "Enable Global Lock Prevention",
+        "type": "boolean",
+        "default": false,
+        "description": "When enabled, creates a virtual switch that prevents screen dimming and lock screen. Only shown when at least one client has 'Join Lock Prevention (global)' enabled. Uses same mechanism as Anti-Sleep (stay-awake)."
+      },
+      "lockPreventionDeviceName": {
+        "title": "Lock Prevention Device Name",
+        "type": "string",
+        "default": "Lock Prevention",
+        "description": "Display name for the Lock Prevention accessory in HomeKit."
       },
       "enableGlobalScreensaverSwitch": {
         "title": "Enable Global Screensaver Switch",

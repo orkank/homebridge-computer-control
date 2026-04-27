@@ -261,6 +261,8 @@ func buildDashboardContent() fyne.CanvasObject {
 
 	stayAwakeLabel = widget.NewLabel("")
 	stayAwakeLabel.TextStyle = fyne.TextStyle{Bold: true}
+	lockPreventionLabel = widget.NewLabel("")
+	lockPreventionLabel.TextStyle = fyne.TextStyle{Bold: true}
 	onStayAwakeStateChanged = func(active bool) {
 		fyne.Do(func() {
 			if stayAwakeLabel != nil {
@@ -271,12 +273,22 @@ func buildDashboardContent() fyne.CanvasObject {
 				}
 				stayAwakeLabel.Refresh()
 			}
+			if lockPreventionLabel != nil {
+				if active {
+					lockPreventionLabel.SetText("🔓 Active")
+				} else {
+					lockPreventionLabel.SetText("Off")
+				}
+				lockPreventionLabel.Refresh()
+			}
 		})
 	}
 	if isStayAwakeActive() {
 		stayAwakeLabel.SetText("☕ Active")
+		lockPreventionLabel.SetText("🔓 Active")
 	} else {
 		stayAwakeLabel.SetText("Off")
+		lockPreventionLabel.SetText("Off")
 	}
 
 	statusRow := statusDot.Object()
@@ -325,6 +337,8 @@ func buildDashboardContent() fyne.CanvasObject {
 		secondaryLabel("Status"), statusRow,
 		// Row 9: Anti-Sleep
 		secondaryLabel("Anti-Sleep"), stayAwakeLabel,
+		// Row 10: Lock Prevention
+		secondaryLabel("Lock Prevention"), lockPreventionLabel,
 	)
 
 	// ── Plugin URL section ──
@@ -343,6 +357,7 @@ func buildDashboardContent() fyne.CanvasObject {
 		statusDot.SetState(StatusDotSending)
 		go func() {
 			ok := sendHeartbeat(appState.Hostname, appState.IP, appState.MAC)
+			recordHeartbeatResult(ok)
 			updateConnectionStatus(ok)
 		}()
 	})
@@ -626,8 +641,12 @@ func buildManagedAppsContent() fyne.CanvasObject {
 			if aa.SleepAfter {
 				badges += " [Sleep]"
 			}
+			label := app.Name
+			if app.DisplayName != "" {
+				label = app.DisplayName + " (" + app.Name + ")"
+			}
 			row := container.NewHBox(
-				widget.NewLabel(app.Name+badges),
+				widget.NewLabel(label+badges),
 				layout.NewSpacer(),
 				delBtn,
 			)
@@ -674,6 +693,10 @@ func buildManagedAppsContent() fyne.CanvasObject {
 
 		listScroll := container.NewScroll(processList)
 		listScroll.SetMinSize(fyne.NewSize(360, 180))
+
+		displayNameEntry := widget.NewEntry()
+		displayNameEntry.SetPlaceHolder("e.g. Firefox (optional, shown in HomeKit)")
+
 		wakeBeforeRadio := widget.NewRadioGroup([]string{"Yes", "No"}, nil)
 		wakeBeforeRadio.SetSelected("No")
 		wakeBeforeHint := widget.NewRichTextWithText("Same as standard wake: WoL → 5s delay → wake-screen (display on) → launch app.")
@@ -701,6 +724,8 @@ func buildManagedAppsContent() fyne.CanvasObject {
 			processEntry,
 			widget.NewLabel("Running processes:"),
 			listScroll,
+			widget.NewLabel("HomeKit display name (optional):"),
+			displayNameEntry,
 			widget.NewLabel("When turning OFF:"),
 			quitModeSelect,
 			quitModeHint,
@@ -711,7 +736,7 @@ func buildManagedAppsContent() fyne.CanvasObject {
 			sleepAfterRadio,
 			sleepAfterHint,
 		)
-		modalContent.Resize(fyne.NewSize(420, 540))
+		modalContent.Resize(fyne.NewSize(420, 580))
 
 		dlg := dialog.NewCustomConfirm("Add Managed App", "Add", "Cancel", modalContent, func(ok bool) {
 			if !ok {
@@ -740,15 +765,16 @@ func buildManagedAppsContent() fyne.CanvasObject {
 				quitMode = QuitModeKill
 			}
 			entry := ManagedAppEntry{
-				Name:       name,
-				WakeBefore: wakeBeforeRadio.Selected == "Yes",
-				SleepAfter: sleepAfterRadio.Selected == "Yes",
-				QuitMode:   quitMode,
+				Name:        name,
+				DisplayName: strings.TrimSpace(displayNameEntry.Text),
+				WakeBefore:  wakeBeforeRadio.Selected == "Yes",
+				SleepAfter:  sleepAfterRadio.Selected == "Yes",
+				QuitMode:    quitMode,
 			}
 			setManagedApps(append(apps, entry))
 			refreshList()
 		}, mainWindow)
-		dlg.Resize(fyne.NewSize(460, 580))
+		dlg.Resize(fyne.NewSize(460, 620))
 		dlg.Show()
 		// Focus entry when dialog opens so user can type immediately
 		go func() {
@@ -801,6 +827,44 @@ func buildSettingsContent() fyne.CanvasObject {
 	})
 	lockCheck.Checked = getEnableRemoteLock()
 
+	var joinAntiSleepCheck *widget.Check
+	enableAntiSleepCheck := widget.NewCheck("Enable Anti-Sleep (individual)", func(checked bool) {
+		setEnableAntiSleep(checked)
+		if checked && joinAntiSleepCheck != nil {
+			joinAntiSleepCheck.Checked = false
+			joinAntiSleepCheck.Refresh()
+		}
+	})
+	enableAntiSleepCheck.Checked = getEnableAntiSleep()
+
+	joinAntiSleepCheck = widget.NewCheck("Join Anti-Sleep (global)", func(checked bool) {
+		setJoinAntiSleep(checked)
+		if checked {
+			enableAntiSleepCheck.Checked = false
+			enableAntiSleepCheck.Refresh()
+		}
+	})
+	joinAntiSleepCheck.Checked = getJoinAntiSleep()
+
+	var joinLockPrevCheck *widget.Check
+	enableLockPrevCheck := widget.NewCheck("Enable Lock Prevention (individual)", func(checked bool) {
+		setEnableLockPrevention(checked)
+		if checked && joinLockPrevCheck != nil {
+			joinLockPrevCheck.Checked = false
+			joinLockPrevCheck.Refresh()
+		}
+	})
+	enableLockPrevCheck.Checked = getEnableLockPrevention()
+
+	joinLockPrevCheck = widget.NewCheck("Join Lock Prevention (global)", func(checked bool) {
+		setJoinLockPrevention(checked)
+		if checked {
+			enableLockPrevCheck.Checked = false
+			enableLockPrevCheck.Refresh()
+		}
+	})
+	joinLockPrevCheck.Checked = getJoinLockPrevention()
+
 	var joinMasterCheck *widget.Check
 	volumeSliderCheck := widget.NewCheck("Enable Volume Slider", func(checked bool) {
 		setEnableVolumeSlider(checked)
@@ -828,6 +892,17 @@ func buildSettingsContent() fyne.CanvasObject {
 	}
 	volumeNameRow := container.NewBorder(nil, nil, widget.NewLabel("Volume Slider Name:"), nil, volumeNameEntry)
 
+	heartbeatEntry := widget.NewEntry()
+	heartbeatEntry.SetPlaceHolder("5-300, default 30")
+	heartbeatEntry.SetText(fmt.Sprintf("%d", getHeartbeatIntervalSec()))
+	heartbeatEntry.OnChanged = func(s string) {
+		var v int
+		if _, err := fmt.Sscanf(s, "%d", &v); err == nil && v >= 5 && v <= 300 {
+			setHeartbeatIntervalSec(v)
+		}
+	}
+	heartbeatRow := container.NewBorder(nil, nil, widget.NewLabel("Heartbeat Interval (sec):"), nil, heartbeatEntry)
+
 	autoStartCheck := widget.NewCheck("Run at Startup (Auto-Start)", func(checked bool) {
 		var asErr error
 		if checked {
@@ -848,9 +923,14 @@ func buildSettingsContent() fyne.CanvasObject {
 			sendTempCheck,
 			screensaverCheck,
 			lockCheck,
+			enableAntiSleepCheck,
+			joinAntiSleepCheck,
+			enableLockPrevCheck,
+			joinLockPrevCheck,
 			volumeSliderCheck,
 			joinMasterCheck,
 			volumeNameRow,
+			heartbeatRow,
 			autoStartCheck,
 		)),
 		layout.NewSpacer(),

@@ -9,6 +9,7 @@ import { RegisteredClient, ClientAction } from './settings';
 
 export const GROUP_ACCESSORY_UUID = 'computer-control-group';
 export const ANTI_SLEEP_ACCESSORY_UUID = 'computer-control-anti-sleep';
+export const LOCK_PREVENTION_ACCESSORY_UUID = 'computer-control-lock-prevention';
 export const SCREENSAVER_ACCESSORY_UUID = 'computer-control-all-screensavers';
 export const LOCK_ACCESSORY_UUID = 'computer-control-lock-computers';
 export const GLOBAL_VOLUME_ACCESSORY_UUID = 'computer-control-global-volume';
@@ -199,9 +200,9 @@ export class AntiSleepAccessory {
     if (targetState) {
       this.isOn = true;
       this.service.updateCharacteristic(this.platform.Characteristic.On, true);
-      this.platform.log.info('☕ Anti-Sleep ON — preventing all computers from sleeping');
+      this.platform.log.info('☕ Anti-Sleep ON — preventing computers from sleeping');
 
-      await this.platform.sendStayAwakeToAllClients(true);
+      await this.platform.syncStayAwakeForAllClients();
 
       const timerMinutes = this.platform.getAntiSleepTimer();
       if (timerMinutes > 0) {
@@ -210,7 +211,7 @@ export class AntiSleepAccessory {
           this.platform.log.info(`⏱️ Anti-Sleep timer expired (${timerMinutes} min) — turning OFF`);
           this.isOn = false;
           this.service.updateCharacteristic(this.platform.Characteristic.On, false);
-          this.platform.sendStayAwakeToAllClients(false);
+          this.platform.syncStayAwakeForAllClients();
         }, timerMinutes * 60 * 1000);
       }
     } else {
@@ -218,7 +219,7 @@ export class AntiSleepAccessory {
       this.service.updateCharacteristic(this.platform.Characteristic.On, false);
       this.platform.log.info('☕ Anti-Sleep OFF');
 
-      await this.platform.sendStayAwakeToAllClients(false);
+      await this.platform.syncStayAwakeForAllClients();
     }
   }
 
@@ -227,6 +228,174 @@ export class AntiSleepAccessory {
       clearTimeout(this.timerHandle);
       this.timerHandle = null;
     }
+  }
+
+  public getState(): boolean {
+    return this.isOn;
+  }
+}
+
+/**
+ * LockPreventionAccessory
+ *
+ * Virtual switch that prevents screen dimming and lock screen on participating clients.
+ * Uses same stay-awake mechanism as Anti-Sleep. Only shown when clients with Join Lock Prevention exist.
+ * - ON  = Send stay-awake to all clients with Join Lock Prevention
+ * - OFF = Stop stay-awake for those clients (if not also in Anti-Sleep)
+ */
+export class LockPreventionAccessory {
+  private service: Service;
+  private isOn = false;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    private readonly accessory: PlatformAccessory,
+    displayName: string,
+  ) {
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, displayName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Lock Prevention')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, LOCK_PREVENTION_ACCESSORY_UUID);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Switch) ||
+      this.accessory.addService(this.platform.Service.Switch);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.handleOnGet.bind(this))
+      .onSet(this.handleOnSet.bind(this));
+  }
+
+  public updateDisplayName(name: string): void {
+    this.service.setCharacteristic(this.platform.Characteristic.Name, name);
+    this.accessory.updateDisplayName(name);
+    const infoService = this.accessory.getService(this.platform.Service.AccessoryInformation);
+    if (infoService) {
+      infoService.updateCharacteristic(this.platform.Characteristic.Name, name);
+    }
+  }
+
+  private handleOnGet(): CharacteristicValue {
+    return this.isOn;
+  }
+
+  private async handleOnSet(value: CharacteristicValue): Promise<void> {
+    const targetState = value as boolean;
+    this.isOn = targetState;
+    this.service.updateCharacteristic(this.platform.Characteristic.On, targetState);
+    this.platform.log.info(`🔓 Lock Prevention ${targetState ? 'ON' : 'OFF'}`);
+    await this.platform.syncStayAwakeForAllClients();
+  }
+
+  public setState(on: boolean): void {
+    this.isOn = on;
+    this.service.updateCharacteristic(this.platform.Characteristic.On, on);
+  }
+
+  public getState(): boolean {
+    return this.isOn;
+  }
+}
+
+/**
+ * DeviceAntiSleepAccessory
+ *
+ * Per-device anti-sleep switch (when client has Enable Anti-Sleep individual).
+ * Toggles individual state; platform syncStayAwakeForAllClients sends to this device when ON.
+ */
+export class DeviceAntiSleepAccessory {
+  private service: Service;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    private readonly accessory: PlatformAccessory,
+    private readonly macKey: string,
+    displayName: string,
+  ) {
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, displayName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Anti-Sleep')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, `anti-sleep-${macKey}`);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Switch) ||
+      this.accessory.addService(this.platform.Service.Switch);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.handleOnGet.bind(this))
+      .onSet(this.handleOnSet.bind(this));
+  }
+
+  private handleOnGet(): CharacteristicValue {
+    return this.platform.getIndividualAntiSleepState(this.macKey);
+  }
+
+  private async handleOnSet(value: CharacteristicValue): Promise<void> {
+    this.platform.setIndividualAntiSleepState(this.macKey, value as boolean);
+    await this.platform.syncStayAwakeForAllClients();
+  }
+
+  public updateDisplayName(name: string): void {
+    this.service.setCharacteristic(this.platform.Characteristic.Name, name);
+    this.accessory.updateDisplayName(name);
+  }
+}
+
+/**
+ * DeviceLockPreventionAccessory
+ *
+ * Per-device lock prevention switch (when client has Enable Lock Prevention individual).
+ */
+export class DeviceLockPreventionAccessory {
+  private service: Service;
+
+  constructor(
+    private readonly platform: ComputerControlPlatform,
+    private readonly accessory: PlatformAccessory,
+    private readonly macKey: string,
+    displayName: string,
+  ) {
+    this.accessory
+      .getService(this.platform.Service.AccessoryInformation)!
+      .setCharacteristic(this.platform.Characteristic.Name, displayName)
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Lock Prevention')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, `lock-prevention-${macKey}`);
+
+    this.service =
+      this.accessory.getService(this.platform.Service.Switch) ||
+      this.accessory.addService(this.platform.Service.Switch);
+
+    this.service.setCharacteristic(this.platform.Characteristic.Name, displayName);
+
+    this.service
+      .getCharacteristic(this.platform.Characteristic.On)
+      .onGet(this.handleOnGet.bind(this))
+      .onSet(this.handleOnSet.bind(this));
+  }
+
+  private handleOnGet(): CharacteristicValue {
+    return this.platform.getIndividualLockPreventionState(this.macKey);
+  }
+
+  private async handleOnSet(value: CharacteristicValue): Promise<void> {
+    this.platform.setIndividualLockPreventionState(this.macKey, value as boolean);
+    await this.platform.syncStayAwakeForAllClients();
+  }
+
+  public updateDisplayName(name: string): void {
+    this.service.setCharacteristic(this.platform.Characteristic.Name, name);
+    this.accessory.updateDisplayName(name);
   }
 }
 
@@ -334,6 +503,10 @@ export class LockComputersAccessory {
 export class VolumeAccessory {
   public readonly accessory: PlatformAccessory;
   private service: Service;
+  /** Volume level before mute (OFF); restored when turning ON. */
+  private lastVolumeBeforeMute = 50;
+  /** Ignore next Brightness=100 from HomeKit (default when turning on). */
+  private ignoreNextBrightness100Until = 0;
 
   constructor(
     private readonly platform: ComputerControlPlatform,
@@ -397,18 +570,27 @@ export class VolumeAccessory {
 
   private handleOnSet(value: CharacteristicValue): void {
     if (value as boolean) {
-      // Turn on: if volume is 0, set to 50
+      // Turn on: restore last volume before mute (not 100%)
       if (this.client.volume === 0) {
-        this.client.volume = 50;
+        const restore = this.lastVolumeBeforeMute > 0 ? this.lastVolumeBeforeMute : 50;
+        this.client.volume = restore;
         this.syncVolumeToCharacteristics();
-        this.platform.sendVolumeRequest(this.client.ip, this.client.port, 50, this.client.token);
+        this.platform.sendVolumeRequest(this.client.ip, this.client.port, restore, this.client.token);
+        // HomeKit may send Brightness=100 as default; ignore it for 500ms
+        if (restore !== 100) {
+          this.ignoreNextBrightness100Until = Date.now() + 500;
+        }
       }
       return;
     }
-    const level = 0;
-    this.client.volume = level;
+    // Turn off: save current volume, then mute
+    const current = this.client.volume;
+    if (typeof current === 'number' && current > 0) {
+      this.lastVolumeBeforeMute = current;
+    }
+    this.client.volume = 0;
     this.syncVolumeToCharacteristics();
-    this.platform.sendVolumeRequest(this.client.ip, this.client.port, level, this.client.token);
+    this.platform.sendVolumeRequest(this.client.ip, this.client.port, 0, this.client.token);
   }
 
   private handleBrightnessGet(): CharacteristicValue {
@@ -419,6 +601,10 @@ export class VolumeAccessory {
 
   private async handleBrightnessSet(value: CharacteristicValue): Promise<void> {
     const level = Math.round(Math.min(100, Math.max(0, value as number)));
+    if (level === 100 && Date.now() < this.ignoreNextBrightness100Until) {
+      return; // Ignore HomeKit's default 100% when turning on
+    }
+    if (level > 0) this.lastVolumeBeforeMute = level;
     const ok = await this.platform.sendVolumeRequest(
       this.client.ip,
       this.client.port,
@@ -442,6 +628,10 @@ export class GlobalVolumeAccessory {
   private service: Service;
   /** Last set value — never wait for client responses; return this to HomeKit. */
   private lastSetLevel = 50;
+  /** Volume before mute; restored when turning ON. */
+  private lastVolumeBeforeMute = 50;
+  /** Ignore HomeKit's default Brightness=100 when turning on. */
+  private ignoreNextBrightness100Until = 0;
 
   constructor(
     private readonly platform: ComputerControlPlatform,
@@ -490,12 +680,17 @@ export class GlobalVolumeAccessory {
   private handleOnSet(value: CharacteristicValue): void {
     if (value as boolean) {
       if (this.lastSetLevel === 0) {
-        this.lastSetLevel = 50;
+        const restore = this.lastVolumeBeforeMute > 0 ? this.lastVolumeBeforeMute : 50;
+        this.lastSetLevel = restore;
         this.syncVolumeToCharacteristics();
-        this.platform.sendVolumeToAllClients(50);
+        this.platform.sendVolumeToAllClients(restore);
+        if (restore !== 100) {
+          this.ignoreNextBrightness100Until = Date.now() + 500;
+        }
       }
       return;
     }
+    if (this.lastSetLevel > 0) this.lastVolumeBeforeMute = this.lastSetLevel;
     this.lastSetLevel = 0;
     this.syncVolumeToCharacteristics();
     this.platform.sendVolumeToAllClients(0);
@@ -546,6 +741,10 @@ export class GlobalVolumeAccessory {
 
   private handleBrightnessSet(value: CharacteristicValue): void {
     const level = Math.round(Math.min(100, Math.max(0, value as number)));
+    if (level === 100 && Date.now() < this.ignoreNextBrightness100Until) {
+      return;
+    }
+    if (level > 0) this.lastVolumeBeforeMute = level;
     this.lastSetLevel = level;
     this.syncVolumeToCharacteristics();
     this.platform.sendVolumeToAllClients(level);
@@ -685,12 +884,14 @@ export class ManagedAppAccessory {
     accessory: PlatformAccessory,
     private client: RegisteredClient,
     private appName: string,
+    displayName: string,
   ) {
     this.accessory = accessory;
+    const nameForDisplay = displayName || appName;
 
     this.accessory
       .getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Name, appName)
+      .setCharacteristic(this.platform.Characteristic.Name, nameForDisplay)
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'HomeBridge Computer Control')
       .setCharacteristic(this.platform.Characteristic.Model, 'Managed App')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, `managed-app-${client.mac}-${appName}`);
@@ -699,7 +900,7 @@ export class ManagedAppAccessory {
       this.accessory.getService(this.platform.Service.Switch) ||
       this.accessory.addService(this.platform.Service.Switch);
 
-    this.service.setCharacteristic(this.platform.Characteristic.Name, appName);
+    this.service.setCharacteristic(this.platform.Characteristic.Name, nameForDisplay);
 
     this.service
       .getCharacteristic(this.platform.Characteristic.On)
@@ -782,6 +983,11 @@ export class ManagedAppAccessory {
     this.client = client;
     this.accessory.context.client = client;
     this.updateFromAppStates(client.appStates);
+    // Update display name if managedApps config changed
+    const appConfig = client.managedApps?.find((a) => a.name.toLowerCase() === this.appName.toLowerCase());
+    const displayName = (appConfig?.displayName && appConfig.displayName.trim()) || this.appName;
+    this.accessory.getService(this.platform.Service.AccessoryInformation)?.updateCharacteristic(this.platform.Characteristic.Name, displayName);
+    this.service.updateCharacteristic(this.platform.Characteristic.Name, displayName);
   }
 }
 

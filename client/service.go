@@ -23,6 +23,15 @@ var (
 	authTokenMu      sync.RWMutex
 )
 
+// Anti-sleep timeout: if client cannot reach server for 10 min, turn off stay-awake locally.
+const stayAwakeNoConnectionTimeout = 10 * time.Minute
+
+var (
+	lastSuccessfulHeartbeat time.Time
+	stayAwakeActivatedAt    time.Time
+	stayAwakeTimeoutMu      sync.Mutex
+)
+
 // RegistrationPayload is the JSON body sent to the Homebridge plugin.
 type RegistrationPayload struct {
 	Hostname             string            `json:"hostname"`
@@ -43,6 +52,10 @@ type RegistrationPayload struct {
 		JoinMasterVolume     bool              `json:"joinMasterVolume,omitempty"`
 		VolumeSliderName     string            `json:"volumeSliderName,omitempty"`
 		Volume               *int              `json:"volume,omitempty"`
+		EnableAntiSleep      bool              `json:"enableAntiSleep,omitempty"`
+		JoinAntiSleep        bool              `json:"joinAntiSleep,omitempty"`
+		EnableLockPrevention bool              `json:"enableLockPrevention,omitempty"`
+		JoinLockPrevention   bool              `json:"joinLockPrevention,omitempty"`
 }
 
 // SleepResponse is the JSON returned by the /sleep endpoint.
@@ -230,6 +243,40 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// recordStayAwakeActivated is called when stay-awake is turned on (for timeout grace period).
+func recordStayAwakeActivated() {
+	stayAwakeTimeoutMu.Lock()
+	stayAwakeActivatedAt = time.Now()
+	stayAwakeTimeoutMu.Unlock()
+}
+
+// recordHeartbeatResult updates lastSuccessfulHeartbeat and checks if stay-awake should auto-off.
+// Call after each sendHeartbeat attempt (not when heartbeat is skipped).
+func recordHeartbeatResult(ok bool) {
+	stayAwakeTimeoutMu.Lock()
+	if ok {
+		lastSuccessfulHeartbeat = time.Now()
+	}
+	stayAwakeTimeoutMu.Unlock()
+
+	// If anti-sleep is on but we haven't reached server for 10 min, turn off locally
+	if !isStayAwakeActive() || flagPluginURL == "" {
+		return
+	}
+	stayAwakeTimeoutMu.Lock()
+	cutoff := lastSuccessfulHeartbeat
+	if cutoff.IsZero() {
+		cutoff = stayAwakeActivatedAt
+	}
+	elapsed := time.Since(cutoff)
+	stayAwakeTimeoutMu.Unlock()
+
+	if elapsed >= stayAwakeNoConnectionTimeout {
+		log.Printf("☕ Anti-Sleep auto-off: no server connection for %.0f min", elapsed.Minutes())
+		stopStayAwake()
+	}
+}
+
 // handleStayAwake enables or disables system sleep prevention on all clients.
 func handleStayAwake(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -242,6 +289,9 @@ func handleStayAwake(w http.ResponseWriter, r *http.Request) {
 	var ok bool
 	if enabled {
 		ok = startStayAwake()
+		if ok {
+			recordStayAwakeActivated()
+		}
 	} else {
 		ok = stopStayAwake()
 	}
@@ -380,13 +430,16 @@ func heartbeatLoop() {
 	// Initial heartbeat (skip if sleeping or dark wake)
 	if !shouldSkipHeartbeat() {
 		ok := sendHeartbeat(appState.Hostname, appState.IP, appState.MAC)
+		recordHeartbeatResult(ok)
 		updateConnectionStatus(ok)
 	}
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	for {
+		interval := time.Duration(getHeartbeatIntervalSec()) * time.Second
+		ticker := time.NewTicker(interval)
+		<-ticker.C
+		ticker.Stop()
 
-	for range ticker.C {
 		// macOS: skip heartbeat if system is sleeping or display is in Dark Wake
 		if shouldSkipHeartbeat() {
 			updateConnectionStatus(false)
@@ -410,6 +463,7 @@ func heartbeatLoop() {
 		}
 
 		ok := sendHeartbeat(appState.Hostname, appState.IP, appState.MAC)
+		recordHeartbeatResult(ok)
 		updateConnectionStatus(ok)
 	}
 }
@@ -418,6 +472,30 @@ func heartbeatLoop() {
 // When screen is off (Dark Wake), client must stay silent - never send "I'm online".
 func shouldSkipHeartbeat() bool {
 	return isDisplayInDarkWake()
+}
+
+var lastImmediateHeartbeat time.Time
+var immediateHeartbeatMu sync.Mutex
+
+// TriggerImmediateHeartbeat sends a heartbeat right away when settings change.
+// Debounced: skips if last trigger was < 2s ago (e.g. rapid volume name typing).
+func TriggerImmediateHeartbeat() {
+	immediateHeartbeatMu.Lock()
+	if time.Since(lastImmediateHeartbeat) < 2*time.Second {
+		immediateHeartbeatMu.Unlock()
+		return
+	}
+	lastImmediateHeartbeat = time.Now()
+	immediateHeartbeatMu.Unlock()
+
+	if flagPluginURL == "" || shouldSkipHeartbeat() {
+		return
+	}
+	go func() {
+		ok := sendHeartbeat(appState.Hostname, appState.IP, appState.MAC)
+		recordHeartbeatResult(ok)
+		updateConnectionStatus(ok)
+	}()
 }
 
 // volumeSyncLoop polls volume when volume slider is enabled; notifies plugin on change.
@@ -526,6 +604,10 @@ func sendHeartbeat(hostname, ip, mac string) bool {
 		EnableVolumeSlider:   getEnableVolumeSlider(),
 		JoinMasterVolume:     getJoinMasterVolume(),
 		VolumeSliderName:     getVolumeSliderName(),
+		EnableAntiSleep:      getEnableAntiSleep(),
+		JoinAntiSleep:        getJoinAntiSleep(),
+		EnableLockPrevention: getEnableLockPrevention(),
+		JoinLockPrevention:   getJoinLockPrevention(),
 	}
 	// Volume in heartbeat only for individual slider; master volume uses volume-changed when it changes
 	if getEnableVolumeSlider() {

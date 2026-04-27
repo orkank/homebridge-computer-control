@@ -8,16 +8,47 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+)
+
+const displayStateCacheTTL = 3 * time.Second
+
+var (
+	displayStateMu       sync.Mutex
+	displayStateCache    DisplayStateInfo
+	displayStateCachedAt time.Time
 )
 
 // getDisplayStateInfo returns detailed display state for debug.
-// Apple Silicon: ioreg no longer has IOPowerManagement; use system_profiler instead.
+// Apple Silicon: ioreg often omits IOPowerManagement; system_profiler may omit
+// "Display Asleep" lines for built-in GPU-only trees — in that case we do not
+// call pmset (health checks and volume polling would spawn it constantly).
 func getDisplayStateInfo() DisplayStateInfo {
+	displayStateMu.Lock()
+	if time.Since(displayStateCachedAt) < displayStateCacheTTL && !displayStateCachedAt.IsZero() {
+		out := displayStateCache
+		displayStateMu.Unlock()
+		return out
+	}
+	displayStateMu.Unlock()
+
+	info := computeDisplayStateInfo()
+
+	displayStateMu.Lock()
+	displayStateCache = info
+	displayStateCachedAt = time.Now()
+	displayStateMu.Unlock()
+	return info
+}
+
+func computeDisplayStateInfo() DisplayStateInfo {
 	info := DisplayStateInfo{}
 	if runtime.GOOS != "darwin" {
 		return info
 	}
-	// 1. system_profiler SPDisplaysDataType — works on Apple Silicon (ioreg power state removed)
+
+	// 1. system_profiler SPDisplaysDataType
 	if out, err := exec.Command("system_profiler", "SPDisplaysDataType").Output(); err == nil {
 		s := string(out)
 		countAsleep := strings.Count(s, "Display Asleep: Yes")
@@ -26,77 +57,44 @@ func getDisplayStateInfo() DisplayStateInfo {
 		info.DisplayAwakeCount = countAwake
 		if countAsleep > 0 && countAwake == 0 {
 			info.IsDisplayAsleep = true
-			info.CurrentPowerState = 1 // asleep
-		} else if countAwake > 0 {
+			info.CurrentPowerState = 1
+			info.PowerStateSource = "system_profiler"
+			info.IsDarkWake = true
+			return info
+		}
+		if countAwake > 0 {
 			info.IsDisplayAsleep = false
-			info.CurrentPowerState = 4 // awake
+			info.CurrentPowerState = 4
+			info.PowerStateSource = "system_profiler"
+			info.IsDarkWake = false
+			return info
 		}
 	}
-	// 2. ioreg fallback for Intel Macs (has IOPowerManagement)
-	if info.CurrentPowerState == 0 {
-		if out, err := exec.Command("ioreg", "-n", "IODisplayWrangler", "-r", "-d", "6").Output(); err == nil {
-			s := string(out)
-			re := regexp.MustCompile(`"(?:CurrentPowerState|DevicePowerState|IOPowerState)"\s*=\s*(\d+)`)
-			for _, m := range re.FindAllStringSubmatch(s, -1) {
-				if len(m) >= 2 {
-					if n, _ := strconv.Atoi(m[1]); n > 0 {
-						info.CurrentPowerState = n
-						info.PowerStateSource = "ioreg"
-						break
-					}
+
+	// 2. ioreg fallback (Intel; some configs still expose power state)
+	if out, err := exec.Command("ioreg", "-n", "IODisplayWrangler", "-r", "-d", "6").Output(); err == nil {
+		s := string(out)
+		re := regexp.MustCompile(`"(?:CurrentPowerState|DevicePowerState|IOPowerState)"\s*=\s*(\d+)`)
+		for _, m := range re.FindAllStringSubmatch(s, -1) {
+			if len(m) >= 2 {
+				if n, _ := strconv.Atoi(m[1]); n > 0 {
+					info.CurrentPowerState = n
+					info.PowerStateSource = "ioreg"
+					info.IsDisplayAsleep = n < 4
+					info.IsDarkWake = n < 4
+					return info
 				}
 			}
 		}
-	} else {
-		info.PowerStateSource = "system_profiler"
 	}
-	info.IsDarkWake = isDisplayInDarkWake()
+
+	// Unknown: treat as full wake. Former pmset -g log fallback caused repeated
+	// heavy subprocesses on every /health, heartbeat, and volume poll.
+	info.IsDarkWake = false
 	return info
 }
 
 // isDisplayInDarkWake returns true if the display is off (Power Nap / Dark Wake).
-// Uses system_profiler on Apple Silicon (ioreg power state removed by Apple).
 func isDisplayInDarkWake() bool {
-	if runtime.GOOS != "darwin" {
-		return false
-	}
-	// system_profiler: "Display Asleep: Yes" when display is off (works on Apple Silicon)
-	if out, err := exec.Command("system_profiler", "SPDisplaysDataType").Output(); err == nil {
-		s := string(out)
-		countAsleep := strings.Count(s, "Display Asleep: Yes")
-		countAwake := strings.Count(s, "Display Asleep: No")
-		if countAsleep > 0 && countAwake == 0 {
-			return true
-		}
-		if countAwake > 0 {
-			return false
-		}
-	}
-	// ioreg fallback for Intel
-	if out, err := exec.Command("ioreg", "-n", "IODisplayWrangler", "-r", "-d", "6").Output(); err == nil {
-		re := regexp.MustCompile(`"(?:CurrentPowerState|DevicePowerState|IOPowerState)"\s*=\s*(\d+)`)
-		if m := re.FindStringSubmatch(string(out)); len(m) >= 2 {
-			if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
-				return n < 4
-			}
-		}
-	}
-	// pmset log fallback
-	if out, err := exec.Command("pmset", "-g", "log").Output(); err == nil {
-		lines := strings.Split(string(out), "\n")
-		for i := len(lines) - 1; i >= 0; i-- {
-			line := strings.TrimSpace(lines[i])
-			if line == "" {
-				continue
-			}
-			lower := strings.ToLower(line)
-			if strings.Contains(lower, "wake") {
-				return false
-			}
-			if strings.Contains(lower, "sleep") {
-				return true
-			}
-		}
-	}
-	return false
+	return getDisplayStateInfo().IsDarkWake
 }
